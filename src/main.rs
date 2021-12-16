@@ -2,21 +2,26 @@
 #![no_main]
 
 use core::ops::Add;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use cortex_m::prelude::_embedded_hal_spi_FullDuplex;
 // The macro for our start-up function
 use cortex_m_rt::entry;
+use embedded_hal::digital::v2::InputPin;
 use panic_probe as _; // needed for panic probe stuff
 
 // Time handling traits
 use embedded_time::rate::*;
 
+use pico::hal::gpio::{Interrupt, Pin};
 // Pull in any important traits
-use pico::hal::{prelude::*};
+use pico::hal::prelude::*;
 
 // A shorter alias for the Peripheral Access Crate, which provides low-level
 // register access
-use pico::hal::{self, pac};
+use pico::hal::{
+    self,
+    pac::{self, interrupt},
+};
 use pio::ArrayVec;
 
 // A shorter alias for the Hardware Abstraction Layer, which provides
@@ -26,6 +31,26 @@ use rtt_target::rtt_init_print;
 use text::render_text;
 
 mod text;
+
+static mut CONFIRM_BUTTON: Option<
+    Pin<hal::gpio::bank0::Gpio16, hal::gpio::Input<hal::gpio::PullDown>>,
+> = None;
+static mut BACK_BUTTON: Option<
+    Pin<hal::gpio::bank0::Gpio15, hal::gpio::Input<hal::gpio::PullDown>>,
+> = None;
+static mut LEFT_BUTTON: Option<
+    Pin<hal::gpio::bank0::Gpio17, hal::gpio::Input<hal::gpio::PullDown>>,
+> = None;
+static mut RIGHT_BUTTON: Option<
+    Pin<hal::gpio::bank0::Gpio18, hal::gpio::Input<hal::gpio::PullDown>>,
+> = None;
+
+static INPUT: InputState = InputState {
+    left: AtomicBool::new(false),
+    right: AtomicBool::new(false),
+    confirm: AtomicBool::new(false),
+    back: AtomicBool::new(false),
+};
 
 #[link_section = ".boot2"]
 #[used]
@@ -140,14 +165,40 @@ fn main() -> ! {
         direction: Direction::PosY,
     };
 
-    loop {
-        let input = Input {
-            left: false,
-            right: false,
-        };
+    // Control buttons (for interface)
+    let left_button = pins.gpio17.into_pull_down_input();
+    let right_button = pins.gpio18.into_pull_down_input();
+    let confirm_button = pins.gpio16.into_pull_down_input();
+    let back_button = pins.gpio15.into_pull_down_input();
 
+    unsafe {
+        // Interrupts not yet set, so this is safe
+        LEFT_BUTTON.insert(left_button);
+        RIGHT_BUTTON.insert(right_button);
+        BACK_BUTTON.insert(back_button);
+        CONFIRM_BUTTON.insert(confirm_button);
+    }
+
+    unsafe {
+        // enable interrupts only after setting global buttons.
+        // No writes happen to the pins before this, so this is also safe
+        let p = LEFT_BUTTON.as_ref().unwrap();
+        p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
+        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        let p = RIGHT_BUTTON.as_ref().unwrap();
+        p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
+        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        let p = BACK_BUTTON.as_ref().unwrap();
+        p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
+        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        let p = CONFIRM_BUTTON.as_ref().unwrap();
+        p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
+        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+    }
+
+    loop {
         // Update the state first. Takes little time and it should happen before the render
-        update(&mut state, input);
+        update(&mut state, &INPUT);
 
         // render state onto the framebuffer and then draw it
         render(&state, &mut framebuffer);
@@ -175,9 +226,32 @@ fn main() -> ! {
     }
 }
 
-struct Input {
-    left: bool,
-    right: bool,
+struct InputState {
+    left: AtomicBool,
+    right: AtomicBool,
+    confirm: AtomicBool,
+    back: AtomicBool,
+}
+
+#[interrupt]
+fn IO_IRQ_BANK0() {
+    let (confirm, back, left, right) = unsafe {
+        // This can only be executed once the interrupts are set.
+        // No writes happen after that => any amount of reads are safe now.w
+        let confirm = CONFIRM_BUTTON.as_ref().unwrap().is_high().unwrap();
+        let back = BACK_BUTTON.as_ref().unwrap().is_high().unwrap();
+        let left = LEFT_BUTTON.as_ref().unwrap().is_high().unwrap();
+        let right = RIGHT_BUTTON.as_ref().unwrap().is_high().unwrap();
+        (confirm, back, left, right)
+    };
+
+    rprintln!(
+        "Interrupt Triggered: Confirm: {}, Back: {}, Left: {}, Right: {}",
+        confirm,
+        back,
+        left,
+        right
+    );
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -208,7 +282,7 @@ impl Direction {
     }
 }
 
-fn update(state: &mut State, input: Input) {
+fn update(state: &mut State, input: &InputState) {
     match state {
         State::Menu => (),
         State::Play {
@@ -216,7 +290,10 @@ fn update(state: &mut State, input: Input) {
             snake,
             apple,
         } => {
-            let new_direction = match (input.left, input.right) {
+            let new_direction = match (
+                input.left.load(Ordering::Acquire),
+                input.right.load(Ordering::Acquire),
+            ) {
                 (true, false) => direction.rotate_ccwise(),
                 (false, true) => direction.rotate_cwise(),
                 _ => *direction,
