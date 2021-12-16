@@ -23,14 +23,14 @@ use pico::hal::{
     self,
     pac::{self, interrupt},
 };
-use pio::ArrayVec;
 
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
 use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
-use text::render_text;
+use snake::{Direction, SnakeState};
 
+mod snake;
 mod text;
 
 static mut CONFIRM_BUTTON: Option<
@@ -46,7 +46,7 @@ static mut RIGHT_BUTTON: Option<
     Pin<hal::gpio::bank0::Gpio18, hal::gpio::Input<hal::gpio::PullDown>>,
 > = None;
 
-static INPUT: InputState = InputState {
+pub static INPUT: InputState = InputState {
     left: AtomicU8::new(0),
     right: AtomicU8::new(0),
     confirm: AtomicU8::new(0),
@@ -152,19 +152,8 @@ fn main() -> ! {
     sm.start();
 
     let mut framebuffer = Framebuffer::default();
-    let snake = {
-        let mut s = ArrayVec::new();
-        s.push(Position::new(1, 2));
-        s.push(Position::new(1, 3));
-        s.push(Position::new(1, 4));
-        s
-    };
 
-    let mut state = State::Play {
-        apple: Position::new(5, 6),
-        snake,
-        direction: Direction::PosY,
-    };
+    let mut state = State::Snake(SnakeState::menu());
 
     // Control buttons (for interface)
     let left_button = pins.gpio17.into_pull_down_input();
@@ -174,10 +163,10 @@ fn main() -> ! {
 
     unsafe {
         // Interrupts not yet set, so this is safe
-        LEFT_BUTTON.insert(left_button);
-        RIGHT_BUTTON.insert(right_button);
-        BACK_BUTTON.insert(back_button);
-        CONFIRM_BUTTON.insert(confirm_button);
+        let _ = LEFT_BUTTON.insert(left_button);
+        let _ = RIGHT_BUTTON.insert(right_button);
+        let _ = BACK_BUTTON.insert(back_button);
+        let _ = CONFIRM_BUTTON.insert(confirm_button);
     }
 
     unsafe {
@@ -227,18 +216,73 @@ fn main() -> ! {
     }
 }
 
+/// A position that is in range `0..16`
+#[derive(Debug, Clone, Copy)]
+pub struct Position {
+    x: u8,
+    y: u8,
+}
+
+impl Position {
+    pub fn new(x: u8, y: u8) -> Self {
+        Self { x, y }
+    }
+
+    pub fn add_dir(self, dir: Direction) -> Option<Self> {
+        match dir {
+            Direction::PosX => {
+                ((0..15).contains(&self.x)).then(|| Position::new(self.x + 1, self.y))
+            }
+            Direction::NegX => {
+                ((1..16).contains(&self.x)).then(|| Position::new(self.x - 1, self.y))
+            }
+            Direction::PosY => {
+                ((0..15).contains(&self.y)).then(|| Position::new(self.x, self.y + 1))
+            }
+            Direction::NegY => {
+                ((1..16).contains(&self.y)).then(|| Position::new(self.x, self.y - 1))
+            }
+        }
+    }
+}
+
+impl Add for Position {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Position::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+fn render(state: &State, framebuffer: &mut Framebuffer) {
+    match state {
+        State::Clock => todo!(),
+        State::Snake(snake) => snake::render(snake, framebuffer),
+        State::Settings => todo!(),
+    }
+}
+
+fn update(state: &mut State, input: &InputState) {
+    match state {
+        State::Clock => todo!(),
+        State::Snake(snake) => snake::update(snake, input),
+        State::Settings => todo!(),
+    }
+}
+
 /// Current input state.
 /// * `0` means not pressed.
 /// * `1` means that the button was pressed and released _during this tick_.
 /// * `2` means that the button is being held down (hasn't been released yet).
 /// Values are set atomically by the interrupt
-struct InputState {
+pub struct InputState {
     left: AtomicU8,
     right: AtomicU8,
     confirm: AtomicU8,
     back: AtomicU8,
 }
 
+/// Interrupt that changes the input state based on GPIO changes on the buttons
 #[interrupt]
 fn IO_IRQ_BANK0() {
     let (confirm, back, left, right) = unsafe {
@@ -293,160 +337,10 @@ fn IO_IRQ_BANK0() {
     );
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Direction {
-    PosX,
-    NegX,
-    PosY,
-    NegY,
-}
-
-impl Direction {
-    pub fn rotate_cwise(self) -> Self {
-        match self {
-            Direction::PosX => Direction::NegY,
-            Direction::NegX => Direction::PosY,
-            Direction::PosY => Direction::PosX,
-            Direction::NegY => Direction::NegX,
-        }
-    }
-
-    pub fn rotate_ccwise(self) -> Self {
-        match self {
-            Direction::PosX => Direction::PosY,
-            Direction::NegX => Direction::NegY,
-            Direction::PosY => Direction::NegX,
-            Direction::NegY => Direction::PosX,
-        }
-    }
-}
-
-fn update(state: &mut State, input: &InputState) {
-    match state {
-        State::Menu => (),
-        State::Play {
-            direction,
-            snake,
-            apple,
-        } => {
-            let new_direction = match (
-                input.left.load(Ordering::Acquire),
-                input.right.load(Ordering::Acquire),
-                input.confirm.load(Ordering::Acquire),
-                input.back.load(Ordering::Acquire),
-            ) {
-                (1 | 2, 0, _, _) => direction.rotate_ccwise(),
-                (0, 1 | 2, _, _) => direction.rotate_cwise(),
-                _ => *direction,
-            };
-
-            // Remove inputs that are no longer being held down
-            let _ = input
-                .left
-                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
-            let _ = input
-                .right
-                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
-            let _ = input
-                .back
-                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
-            let _ = input
-                .confirm
-                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
-
-            *direction = new_direction;
-
-            // move snake in the direction
-            let new_head = snake.last().unwrap().add_dir(new_direction);
-
-            // CHeck position is whithin bounds
-            if let Some(new_head) = new_head {
-                let snake_len = snake.len();
-                // "shift" snake forward, then add new head
-                for i in 0..(snake_len - 1) {
-                    snake[i] = snake[i + 1];
-                }
-
-                snake[snake_len - 1] = new_head;
-            } else {
-                *state = State::Menu;
-            }
-        }
-    }
-}
-
-// Render the state onto the framebuffer
-fn render(state: &State, framebuffer: &mut Framebuffer) {
-    match state {
-        State::Menu => {
-            render_text(framebuffer, "ABA", Position::new(1, 6));
-        }
-        State::Play {
-            snake,
-            apple,
-            direction,
-        } => {
-            *framebuffer = Framebuffer::default();
-
-            let head_idx = snake.len() - 1;
-            snake.iter().enumerate().for_each(|(i, pos)| {
-                // color snake green, head blueish
-                framebuffer[pos.y as usize][pos.x as usize] =
-                    Color::new(0, 0x0a, ((i == head_idx) as u8) << 4)
-            });
-
-            framebuffer[apple.y as usize][apple.y as usize] = Color::new(0x0a, 0, 0);
-        }
-    }
-}
-
-/// A position that is in range `0..16`
-#[derive(Debug, Clone, Copy)]
-pub struct Position {
-    x: u8,
-    y: u8,
-}
-
-impl Position {
-    pub fn new(x: u8, y: u8) -> Self {
-        Self { x, y }
-    }
-
-    pub fn add_dir(self, dir: Direction) -> Option<Self> {
-        match dir {
-            Direction::PosX => {
-                ((0..15).contains(&self.x)).then(|| Position::new(self.x + 1, self.y))
-            }
-            Direction::NegX => {
-                ((1..16).contains(&self.x)).then(|| Position::new(self.x - 1, self.y))
-            }
-            Direction::PosY => {
-                ((0..15).contains(&self.y)).then(|| Position::new(self.x, self.y + 1))
-            }
-            Direction::NegY => {
-                ((1..16).contains(&self.y)).then(|| Position::new(self.x, self.y - 1))
-            }
-        }
-    }
-}
-
-impl Add for Position {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Position::new(self.x + rhs.x, self.y + rhs.y)
-    }
-}
-
-#[derive(Debug)]
 enum State {
-    Menu,
-    Play {
-        direction: Direction,
-        /// Snake tiles in an array vec. Last element is the head
-        snake: ArrayVec<Position, { 16 * 16 }>,
-        apple: Position,
-    },
+    Clock,
+    Snake(SnakeState),
+    Settings,
 }
 
 /// GRB Color
@@ -469,25 +363,25 @@ impl Color {
         u32::from_be_bytes([self.g, self.r, self.b, 0])
     }
 
-    pub fn into_spi_bytes(&self) -> [u8; 9] {
-        use bitvec::prelude::*;
-        let color = [self.g, self.r, self.b];
-        let color = color.view_bits::<Msb0>();
+    // pub fn into_spi_bytes(&self) -> [u8; 9] {
+    //     use bitvec::prelude::*;
+    //     let color = [self.g, self.r, self.b];
+    //     let color = color.view_bits::<Msb0>();
 
-        let mut arr = bitarr![Msb0, u8; 0; 8*9];
+    //     let mut arr = bitarr![Msb0, u8; 0; 8*9];
 
-        for i in 0..3 * 8 {
-            if color.get(i).unwrap() == true {
-                arr.set(i * 3, true);
-                arr.set(i * 3 + 1, true);
-                arr.set(i * 3 + 2, false);
-            } else {
-                arr.set(i * 3, true);
-                arr.set(i * 3 + 1, false);
-                arr.set(i * 3 + 2, false);
-            };
-        }
+    //     for i in 0..3 * 8 {
+    //         if color.get(i).unwrap() == true {
+    //             arr.set(i * 3, true);
+    //             arr.set(i * 3 + 1, true);
+    //             arr.set(i * 3 + 2, false);
+    //         } else {
+    //             arr.set(i * 3, true);
+    //             arr.set(i * 3 + 1, false);
+    //             arr.set(i * 3 + 2, false);
+    //         };
+    //     }
 
-        arr.into_inner()
-    }
+    //     arr.into_inner()
+    // }
 }
