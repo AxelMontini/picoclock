@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+atomic-polyfill = "0.1.5"
 pio = "0.1.0"
 # pio-proc = { git = "https://github.com/rp-rs/pio-rs.git", branch = "main" }
 panic-probe = { version = "0.2", features = ["print-rtt"] }

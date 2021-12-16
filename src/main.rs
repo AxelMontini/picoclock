@@ -2,8 +2,9 @@
 #![no_main]
 
 use core::ops::Add;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
+use atomic_polyfill::AtomicU8;
 // The macro for our start-up function
 use cortex_m_rt::entry;
 use embedded_hal::digital::v2::InputPin;
@@ -46,10 +47,10 @@ static mut RIGHT_BUTTON: Option<
 > = None;
 
 static INPUT: InputState = InputState {
-    left: AtomicBool::new(false),
-    right: AtomicBool::new(false),
-    confirm: AtomicBool::new(false),
-    back: AtomicBool::new(false),
+    left: AtomicU8::new(0),
+    right: AtomicU8::new(0),
+    confirm: AtomicU8::new(0),
+    back: AtomicU8::new(0),
 };
 
 #[link_section = ".boot2"]
@@ -226,11 +227,16 @@ fn main() -> ! {
     }
 }
 
+/// Current input state.
+/// * `0` means not pressed.
+/// * `1` means that the button was pressed and released _during this tick_.
+/// * `2` means that the button is being held down (hasn't been released yet).
+/// Values are set atomically by the interrupt
 struct InputState {
-    left: AtomicBool,
-    right: AtomicBool,
-    confirm: AtomicBool,
-    back: AtomicBool,
+    left: AtomicU8,
+    right: AtomicU8,
+    confirm: AtomicU8,
+    back: AtomicU8,
 }
 
 #[interrupt]
@@ -245,12 +251,45 @@ fn IO_IRQ_BANK0() {
         (confirm, back, left, right)
     };
 
+    // check differences
+    if confirm {
+        INPUT.confirm.store(2, Ordering::AcqRel);
+    } else {
+        let _ = INPUT
+            .confirm
+            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
+    }
+
+    if back {
+        INPUT.back.store(2, Ordering::AcqRel);
+    } else {
+        let _ = INPUT
+            .back
+            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
+    }
+
+    if left {
+        INPUT.left.store(2, Ordering::AcqRel);
+    } else {
+        let _ = INPUT
+            .left
+            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
+    }
+
+    if right {
+        INPUT.right.store(2, Ordering::AcqRel);
+    } else {
+        let _ = INPUT
+            .right
+            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
+    }
+
     rprintln!(
         "Interrupt Triggered: Confirm: {}, Back: {}, Left: {}, Right: {}",
-        confirm,
-        back,
-        left,
-        right
+        INPUT.confirm.load(Ordering::Release),
+        INPUT.back.load(Ordering::Release),
+        INPUT.left.load(Ordering::Release),
+        INPUT.right.load(Ordering::Release)
     );
 }
 
@@ -293,11 +332,27 @@ fn update(state: &mut State, input: &InputState) {
             let new_direction = match (
                 input.left.load(Ordering::Acquire),
                 input.right.load(Ordering::Acquire),
+                input.confirm.load(Ordering::Acquire),
+                input.back.load(Ordering::Acquire),
             ) {
-                (true, false) => direction.rotate_ccwise(),
-                (false, true) => direction.rotate_cwise(),
+                (1 | 2, 0, _, _) => direction.rotate_ccwise(),
+                (0, 1 | 2, _, _) => direction.rotate_cwise(),
                 _ => *direction,
             };
+
+            // Remove inputs that are no longer being held down
+            let _ = input
+                .left
+                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
+            let _ = input
+                .right
+                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
+            let _ = input
+                .back
+                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
+            let _ = input
+                .confirm
+                .compare_exchange(1, 0, Ordering::Release, Ordering::Release);
 
             *direction = new_direction;
 
