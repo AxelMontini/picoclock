@@ -1,7 +1,8 @@
 use crate::{Color, Framebuffer, Position};
 
 pub struct Letter<const W: usize, const H: usize> {
-    /// Bitmap. index 0,0 is bottom left corner.
+    /// Bitmap. index 0,0 is top left corner,
+    /// for the ease of writing in Rust.
     data: &'static [[bool; W]; H],
 }
 
@@ -16,14 +17,19 @@ impl<const W: usize, const H: usize> ColorRender for Letter<W, H> {
         let origin_x = origin.x as usize;
         let origin_y = origin.y as usize;
 
-        self.data.iter().enumerate().for_each(|(row_idx, row)| {
-            row.iter()
-                .enumerate()
-                .filter(|(_c, &draw)| draw)
-                .for_each(|(col_idx, _draw)| {
-                    framebuffer[origin_y + row_idx][origin_x + col_idx] = color;
-                })
-        });
+        // Reverse because the first row is the top one
+        self.data
+            .iter()
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_c, &draw)| draw)
+                    .for_each(|(col_idx, _draw)| {
+                        framebuffer[origin_y + row_idx][origin_x + col_idx] = color;
+                    })
+            });
     }
 
     fn bounds(&self) -> (usize, usize) {
@@ -43,9 +49,17 @@ pub trait ColorRender {
 /// `origin` is from the bottom left corner of the framebuffer
 /// to the bottom left corner of the text.
 /// Letters are 5 tall and width is variable.
-pub fn render_text(framebuffer: &mut Framebuffer, text: &str, origin: Position) {
+///
+/// `colors` is a slice of colors for each letter.
+/// If color is shorter than the characters, then the function panics.
+pub fn render_text(
+    framebuffer: &mut Framebuffer,
+    text: &str,
+    origin: Position,
+    mut colors: impl Iterator<Item = impl Into<Color>>,
+) {
     text.chars().fold(origin, |cursor, c| {
-        let bounds = render_char(framebuffer, c, cursor);
+        let bounds = render_char(framebuffer, c, cursor, colors.next().unwrap().into());
         Position::new(1 + cursor.x + bounds.0 as u8, cursor.y)
     });
 }
@@ -55,25 +69,26 @@ pub fn render_char(
     framebuffer: &mut Framebuffer,
     character: char,
     origin: Position,
+    color: Color,
 ) -> (usize, usize) {
     if !character.is_ascii() {
         panic!("Not an ascii character: {:x}", character as u64);
     }
 
-    let index = character as usize - 'A' as usize;
+    let index = character as usize - '0' as usize;
     let letter = TABLE.get(index).expect("unimplemented character");
 
-    letter.render(framebuffer, origin, Color::new(0x0a, 0x0a, 0x0a));
+    letter.render(framebuffer, origin, color);
 
     letter.bounds()
 }
 
 const A: Letter<3, 5> = Letter::new(&[
-    [true, false, true],
-    [true, false, true],
     [true; 3],
     [true, false, true],
     [true; 3],
+    [true, false, true],
+    [true, false, true],
 ]);
 const B: Letter<3, 5> = Letter::new(&[
     [true, true, false],
@@ -191,8 +206,8 @@ const R: Letter<3, 5> = Letter::new(&[
 const S: Letter<3, 5> = Letter::new(&[
     [true, true, true],
     [true, false, false],
-    [true, true, false],
-    [true, false, true],
+    [false, true, false],
+    [false, false, true],
     [true, true, true],
 ]);
 const T: Letter<3, 5> = Letter::new(&[

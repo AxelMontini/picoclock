@@ -58,7 +58,7 @@ pub static INPUT: InputState = InputState {
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 /// framebuffer type. The bottom left corner is at position `(0,0)`
-type Framebuffer = [[Color; 16]; 16];
+type Framebuffer = [[Color; 32]; 16];
 
 #[entry]
 fn main() -> ! {
@@ -161,6 +161,8 @@ fn main() -> ! {
     let confirm_button = pins.gpio16.into_pull_down_input();
     let back_button = pins.gpio15.into_pull_down_input();
 
+    rprintln!("HIGH: {}", right_button.is_high().unwrap());
+
     unsafe {
         // Interrupts not yet set, so this is safe
         let _ = LEFT_BUTTON.insert(left_button);
@@ -174,16 +176,20 @@ fn main() -> ! {
         // No writes happen to the pins before this, so this is also safe
         let p = LEFT_BUTTON.as_ref().unwrap();
         p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
-        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        //p.set_interrupt_enabled(Interrupt::EdgeLow, true);
         let p = RIGHT_BUTTON.as_ref().unwrap();
         p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
-        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        //p.set_interrupt_enabled(Interrupt::EdgeLow, true);
         let p = BACK_BUTTON.as_ref().unwrap();
         p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
-        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        //p.set_interrupt_enabled(Interrupt::EdgeLow, true);
         let p = CONFIRM_BUTTON.as_ref().unwrap();
         p.set_interrupt_enabled(Interrupt::EdgeHigh, true);
-        p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+        //p.set_interrupt_enabled(Interrupt::EdgeLow, true);
+    }
+
+    unsafe {
+        pac::NVIC::unmask(hal::pac::Interrupt::IO_IRQ_BANK0);
     }
 
     loop {
@@ -194,7 +200,33 @@ fn main() -> ! {
         render(&state, &mut framebuffer);
 
         // drawing takes a while, the FIFO queue must be written to only when it's got space
+        // Also the framebuffer rows are contiguous, but the matrices are connected in series
+        // (writing to the first pixel of the second matrix requires all the pixels of the first
+        // matrix to be written to)
+        // So two loops are required (there could be a way to make it smarter?)
+        // Write Matrix 1 (first 16 leds per row)
         framebuffer.iter().enumerate().for_each(|(i, row)| {
+            let row = &row[..16];
+            if i & 1 == 1 {
+                let row_iter = row.iter().rev();
+                row_iter.for_each(|color| {
+                    while !tx.write(color.to_word()) {
+                        cortex_m::asm::nop();
+                    }
+                });
+            } else {
+                let row_iter = row.iter();
+                row_iter.for_each(|color| {
+                    while !tx.write(color.to_word()) {
+                        cortex_m::asm::nop();
+                    }
+                });
+            };
+        });
+
+        // Write matrix 2 (last 16 leds of row)
+        framebuffer.iter().enumerate().for_each(|(i, row)| {
+            let row = &row[16..];
             if i & 1 == 1 {
                 let row_iter = row.iter().rev();
                 row_iter.for_each(|color| {
@@ -285,56 +317,60 @@ pub struct InputState {
 /// Interrupt that changes the input state based on GPIO changes on the buttons
 #[interrupt]
 fn IO_IRQ_BANK0() {
-    let (confirm, back, left, right) = unsafe {
-        // This can only be executed once the interrupts are set.
-        // No writes happen after that => any amount of reads are safe now.w
-        let confirm = CONFIRM_BUTTON.as_ref().unwrap().is_high().unwrap();
-        let back = BACK_BUTTON.as_ref().unwrap().is_high().unwrap();
-        let left = LEFT_BUTTON.as_ref().unwrap().is_high().unwrap();
-        let right = RIGHT_BUTTON.as_ref().unwrap().is_high().unwrap();
-        (confirm, back, left, right)
-    };
+    cortex_m::interrupt::free(|cs| {
+        // debounce individual inputs
 
-    // check differences
-    if confirm {
-        INPUT.confirm.store(2, Ordering::AcqRel);
-    } else {
-        let _ = INPUT
-            .confirm
-            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
-    }
+        let (confirm, back, left, right) = unsafe {
+            // This can only be executed once the interrupts are set.
+            // No writes happen after that => any amount of reads are safe now.w
+            let confirm = CONFIRM_BUTTON.as_ref().unwrap().is_high().unwrap();
+            let back = BACK_BUTTON.as_ref().unwrap().is_high().unwrap();
+            let left = LEFT_BUTTON.as_ref().unwrap().is_high().unwrap();
+            let right = RIGHT_BUTTON.as_ref().unwrap().is_high().unwrap();
+            (confirm, back, left, right)
+        };
 
-    if back {
-        INPUT.back.store(2, Ordering::AcqRel);
-    } else {
-        let _ = INPUT
-            .back
-            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
-    }
+        // check differences
+        if confirm {
+            INPUT.confirm.store(2, Ordering::Release);
+        } else {
+            let _ = INPUT
+                .confirm
+                .compare_exchange(2, 1, Ordering::Release, Ordering::Release);
+        }
 
-    if left {
-        INPUT.left.store(2, Ordering::AcqRel);
-    } else {
-        let _ = INPUT
-            .left
-            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
-    }
+        if back {
+            INPUT.back.store(2, Ordering::Release);
+        } else {
+            let _ = INPUT
+                .back
+                .compare_exchange(2, 1, Ordering::Release, Ordering::Release);
+        }
 
-    if right {
-        INPUT.right.store(2, Ordering::AcqRel);
-    } else {
-        let _ = INPUT
-            .right
-            .compare_exchange(2, 1, Ordering::AcqRel, Ordering::AcqRel);
-    }
+        if left {
+            INPUT.left.store(2, Ordering::Release);
+        } else {
+            let _ = INPUT
+                .left
+                .compare_exchange(2, 1, Ordering::Release, Ordering::Release);
+        }
 
-    rprintln!(
-        "Interrupt Triggered: Confirm: {}, Back: {}, Left: {}, Right: {}",
-        INPUT.confirm.load(Ordering::Release),
-        INPUT.back.load(Ordering::Release),
-        INPUT.left.load(Ordering::Release),
-        INPUT.right.load(Ordering::Release)
-    );
+        if right {
+            INPUT.right.store(2, Ordering::Release);
+        } else {
+            let _ = INPUT
+                .right
+                .compare_exchange(2, 1, Ordering::Release, Ordering::Release);
+        }
+
+        rprintln!(
+            "Interrupt Triggered: Confirm: {}, Back: {}, Left: {}, Right: {}",
+            INPUT.confirm.load(Ordering::Acquire),
+            INPUT.back.load(Ordering::Acquire),
+            INPUT.left.load(Ordering::Acquire),
+            INPUT.right.load(Ordering::Acquire)
+        );
+    });
 }
 
 enum State {

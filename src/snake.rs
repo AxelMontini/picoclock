@@ -35,7 +35,8 @@ impl Direction {
 
 pub fn update(state: &mut SnakeState, input: &InputState) {
     match state {
-        SnakeState::Menu { selected } => {
+        SnakeState::Menu { selected, frame } => {
+            *frame = (*frame + 1) % 16;
             match (
                 input.confirm.load(Ordering::Acquire),
                 input.back.load(Ordering::Acquire),
@@ -100,9 +101,18 @@ pub fn update(state: &mut SnakeState, input: &InputState) {
 // Render the state onto the framebuffer
 pub fn render(state: &SnakeState, framebuffer: &mut Framebuffer) {
     match state {
-        SnakeState::Menu { .. } => {
-            render_text(framebuffer, "ABA", Position::new(1, 6));
-        }
+        SnakeState::Menu { frame, selected } => match selected {
+            MenuItem::Start => {
+                render_text(
+                    framebuffer,
+                    "START",
+                    Position::new(1, 6),
+                    [[Color::new(0x0F, 0, 0), Color::new(0, 0x0F, 0)][frame / 8]]
+                        .into_iter()
+                        .cycle(),
+                );
+            }
+        },
         SnakeState::Play {
             snake,
             apple,
@@ -126,6 +136,7 @@ pub fn render(state: &SnakeState, framebuffer: &mut Framebuffer) {
 pub enum SnakeState {
     Menu {
         selected: MenuItem,
+        frame: usize,
     },
     Play {
         direction: Direction,
@@ -158,6 +169,7 @@ impl SnakeState {
     /// Return the initial [`SnakeState::Menu`] state
     pub fn menu() -> Self {
         SnakeState::Menu {
+            frame: 0,
             selected: MenuItem::Start,
         }
     }
