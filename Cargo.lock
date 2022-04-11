@@ -328,21 +328,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0744126afe1a6dd7f394cb50a716dbe086cb06e255e53d8d0185d82828358fb5"
 
 [[package]]
-name = "pico"
-version = "0.1.0"
-source = "git+https://github.com/rp-rs/rp-hal.git?branch=main#53d9dbdf524a63ae78d06fd93e25de73aa005015"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "embedded-time",
- "rp2040-boot2",
- "rp2040-hal",
- "usb-device",
- "usbd-hid",
- "usbd-serial",
-]
-
-[[package]]
 name = "picoclock"
 version = "0.1.0"
 dependencies = [
@@ -353,8 +338,8 @@ dependencies = [
  "embedded-hal",
  "embedded-time",
  "panic-probe",
- "pico",
- "pio",
+ "pio 0.1.0",
+ "rp-pico",
  "rp2040-boot2",
  "rtt-target",
 ]
@@ -364,6 +349,17 @@ name = "pio"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "593b4978951e32f8dd5b76203503a9dd8dc4665e4bcb4f7fe8e03e33b9f7abc0"
+dependencies = [
+ "arrayvec",
+ "num_enum",
+ "paste",
+]
+
+[[package]]
+name = "pio"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fd642eada42517e6589cd7f5e830630324aec628fb4aa719000f8801e40c0a2"
 dependencies = [
  "arrayvec",
  "num_enum",
@@ -439,6 +435,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-pico"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0448eedbea7c5af834a7270fab470f7a815777e3ac09be135fb3f06afd163e7b"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "embedded-time",
+ "rp2040-boot2",
+ "rp2040-hal",
+ "usb-device",
+ "usbd-hid",
+ "usbd-serial",
+]
+
+[[package]]
 name = "rp2040-boot2"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,8 +461,9 @@ dependencies = [
 
 [[package]]
 name = "rp2040-hal"
-version = "0.3.0"
-source = "git+https://github.com/rp-rs/rp-hal.git?branch=main#53d9dbdf524a63ae78d06fd93e25de73aa005015"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4bca865e0a5a0aba04992ede50d7585f3dba13863943445b5ad1c81270e112e"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -459,7 +472,7 @@ dependencies = [
  "itertools",
  "nb 1.0.0",
  "paste",
- "pio",
+ "pio 0.2.0",
  "rand_core",
  "rp2040-pac",
  "usb-device",
@@ -469,9 +482,9 @@ dependencies = [
 
 [[package]]
 name = "rp2040-pac"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d498094687d95e99642d0b220353781ee341760624a44cfe7b8b5e0cf424cd4f"
+checksum = "13a6106d5db01c7171a39c1f7696780912db9b42fe7ac722db60069c8904ea7c"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",

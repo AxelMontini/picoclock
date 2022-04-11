@@ -15,15 +15,11 @@ use panic_probe as _; // needed for panic probe stuff
 // Time handling traits
 use embedded_time::rate::*;
 
-use pico::hal::gpio::{Interrupt, Pin};
-// Pull in any important traits
-use pico::hal::prelude::*;
-
-// A shorter alias for the Peripheral Access Crate, which provides low-level
-// register access
-use pico::hal::{
+use rp_pico::hal::{
     self,
+    gpio::{Interrupt, Pin},
     pac::{self, interrupt},
+    prelude::*,
 };
 
 // A shorter alias for the Hardware Abstraction Layer, which provides
@@ -32,6 +28,8 @@ use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
 use snake::{Direction, SnakeState};
 
+mod clock;
+mod input;
 mod snake;
 mod text;
 
@@ -42,12 +40,18 @@ type LeftButtonPin = Pin<hal::gpio::bank0::Gpio17, hal::gpio::Input<hal::gpio::P
 type BackButtonPin = Pin<hal::gpio::bank0::Gpio15, hal::gpio::Input<hal::gpio::PullDown>>;
 type ConfirmButtonPin = Pin<hal::gpio::bank0::Gpio16, hal::gpio::Input<hal::gpio::PullDown>>;
 
-static CONFIRM_BUTTON: Mutex<RefCell<Option<ConfirmButtonPin>>> = Mutex::new(RefCell::new(None));
-static BACK_BUTTON: Mutex<RefCell<Option<BackButtonPin>>> = Mutex::new(RefCell::new(None));
-static LEFT_BUTTON: Mutex<RefCell<Option<LeftButtonPin>>> = Mutex::new(RefCell::new(None));
-static RIGHT_BUTTON: Mutex<RefCell<Option<RightButtonPin>>> = Mutex::new(RefCell::new(None));
+pub(crate) static CONFIRM_BUTTON: Mutex<RefCell<Option<ConfirmButtonPin>>> =
+    Mutex::new(RefCell::new(None));
+pub(crate) static BACK_BUTTON: Mutex<RefCell<Option<BackButtonPin>>> =
+    Mutex::new(RefCell::new(None));
+pub(crate) static LEFT_BUTTON: Mutex<RefCell<Option<LeftButtonPin>>> =
+    Mutex::new(RefCell::new(None));
+pub(crate) static RIGHT_BUTTON: Mutex<RefCell<Option<RightButtonPin>>> =
+    Mutex::new(RefCell::new(None));
 
-static INPUT_STATE: Mutex<RefCell<InputState>> = Mutex::new(RefCell::new(InputState::new()));
+static INPUT_STATE: Mutex<RefCell<Option<InputState>>> = Mutex::new(RefCell::new(None));
+static ALARM0: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
+static CLOCK: Mutex<RefCell<Option<hal::clocks::SystemClock>>> = Mutex::new(RefCell::new(None));
 
 #[link_section = ".boot2"]
 #[used]
@@ -72,7 +76,7 @@ fn main() -> ! {
     //
     // The default is to generate a 125 MHz system clock
     let clocks = hal::clocks::init_clocks_and_plls(
-        pico::XOSC_CRYSTAL_FREQ,
+        rp_pico::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -162,8 +166,19 @@ fn main() -> ! {
     let confirm_button = pins.gpio16.into_pull_down_input();
     let back_button = pins.gpio15.into_pull_down_input();
 
+    let input_state = InputState::new(Instant::new(&clocks.system_clock));
+
     cortex_m::interrupt::free(|cs| {
-        LEFT_BUTTON.borrow(cs).insert(left_button);
+        LEFT_BUTTON.borrow(cs).insert(left_button); // global button pins after configuring
+        RIGHT_BUTTON.borrow(cs).insert(right_button);
+        CONFIRM_BUTTON.borrow(cs).insert(confirm_button);
+        BACK_BUTTON.borrow(cs).insert(back_button);
+
+        INPUT_STATE.borrow(cs).insert(input_state); // default input state
+
+        /// schedule next render and insert into global alarm for further scheduling
+        alarm0.schedule(10.milliseconds()).unwrap();
+        ALARM0.borrow(cs).insert(alarm0);
     });
 
     loop {
@@ -173,54 +188,7 @@ fn main() -> ! {
         // render state onto the framebuffer and then draw it
         render(&state, &mut framebuffer);
 
-        // draw in interrupt-free section to prevent interrupts from
-        // causing issues with timing
-        cortex_m::interrupt::free(|cs| {
-            // drawing takes a while, the FIFO queue must be written to only when it's got space
-            // Also the framebuffer rows are contiguous, but the matrices are connected in series
-            // (writing to the first pixel of the second matrix requires all the pixels of the first
-            // matrix to be written to)
-            // So two loops are required (there could be a way to make it smarter?)
-            // Write Matrix 1 (first 16 leds per row)
-            framebuffer.iter().enumerate().for_each(|(i, row)| {
-                let row = &row[..16];
-                if i & 1 == 1 {
-                    let row_iter = row.iter().rev();
-                    row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                } else {
-                    let row_iter = row.iter();
-                    row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                };
-            });
-
-            // Write matrix 2 (last 16 leds of row)
-            framebuffer.iter().enumerate().for_each(|(i, row)| {
-                let row = &row[16..];
-                if i & 1 == 1 {
-                    let row_iter = row.iter().rev();
-                    row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                } else {
-                    let row_iter = row.iter();
-                    row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                };
-            });
-        });
+        draw(&framebuffer);
 
         // led reset time is 50 microseconds, sleep for 100 and call it a day
         delay.delay_us(100);
@@ -265,6 +233,53 @@ impl Add for Position {
     }
 }
 
+fn draw(framebuffer: &Framebuffer) {
+    // drawing takes a while, the FIFO queue must be written to only when it's got space
+    // Also the framebuffer rows are contiguous, but the matrices are connected in series
+    // (writing to the first pixel of the second matrix requires all the pixels of the first
+    // matrix to be written to)
+    // So two loops are required (there could be a way to make it smarter?)
+    // Write Matrix 1 (first 16 leds per row)
+    framebuffer.iter().enumerate().for_each(|(i, row)| {
+        let row = &row[..16];
+        if i & 1 == 1 {
+            let row_iter = row.iter().rev();
+            row_iter.for_each(|color| {
+                while !tx.write(color.to_word()) {
+                    cortex_m::asm::nop();
+                }
+            });
+        } else {
+            let row_iter = row.iter();
+            row_iter.for_each(|color| {
+                while !tx.write(color.to_word()) {
+                    cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
+                }
+            });
+        };
+    });
+
+    // Write matrix 2 (last 16 leds of row)
+    framebuffer.iter().enumerate().for_each(|(i, row)| {
+        let row = &row[16..];
+        if i & 1 == 1 {
+            let row_iter = row.iter().rev();
+            row_iter.for_each(|color| {
+                while !tx.write(color.to_word()) {
+                    cortex_m::asm::nop();
+                }
+            });
+        } else {
+            let row_iter = row.iter();
+            row_iter.for_each(|color| {
+                while !tx.write(color.to_word()) {
+                    cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
+                }
+            });
+        };
+    });
+}
+
 fn render(state: &State, framebuffer: &mut Framebuffer) {
     match state {
         State::Clock => todo!(),
@@ -281,85 +296,22 @@ fn update(state: &mut State, input: &InputState) {
     }
 }
 
-/// should be greater than 10 according to [`the docs`](https://docs.rs/rp2040-hal/latest/rp2040_hal/timer/struct.Alarm0.html)
-const BUTTON_DEBOUNCE_TIME: Milliseconds = Milliseconds(50);
-
-/// What button has been pressed most recently
-#[derive(Clone, Copy)]
-pub enum ButtonState {
-    /// Was pressed at instant
-    Pressed(Instant),
-    /// Was released at instant
-    Released(Instant),
-}
-
-/// Current input state.
-/// The right `ButtonState` is determined from the samples (LSB is newest sample).
-pub struct InputState {
-    confirm: ButtonState,
-    back: ButtonState,
-    left: ButtonState,
-    right: ButtonState,
-    /// input queue for the confirm button. LSB is most recent state.
-    confirm_queue: u8,
-    back_queue: u8,
-    left_queue: u8,
-    right_queue: u8,
-}
-
-impl InputState {
-    pub fn new(time: Instant) -> Self {
-        Self {
-            confirm: ButtonState::Released(time),
-            back: ButtonState::Released(time),
-            left: ButtonState::Released(time),
-            right: ButtonState::Released(time),
-            back_queue: 0,
-            confirm_queue: 0,
-            left_queue: 0,
-            right_queue: 0,
-        }
-    }
-}
-
-/// Interrupt that debounces the inputs and sets the input state
-/// accordingly. Should be ran once every [`BUTTON_DEBOUNCE_TIME`]
+/// Interrupt that runs (`update`) and (`render`) for each frame
 #[interrupt]
 fn TIMER_IRQ_0() {
     cortex_m::interrupt::free(|cs| {
-        update_input_state(cs);
-
         // reschedule timer to run later
     });
 }
 
-fn update_input_state(cs: &CriticalSection) {
-    // get input states
-    let confirm = CONFIRM_BUTTON.borrow(cs).borrow_mut().is_high().unwrap();
-    let back = BACK_BUTTON.borrow(cs).borrow_mut().is_high().unwrap();
-    let left = LEFT_BUTTON.borrow(cs).borrow_mut().is_high().unwrap();
-    let right = RIGHT_BUTTON.borrow(cs).borrow_mut().is_high().unwrap();
+/// Interrupt that runs on GPIO inputs.
+/// Handles button presses for now.
+#[interrupt]
+fn IO_IRQ_BANK0() {
+    // Once a button is pressed, we should debounce the signal.
+    // If input state changes, then we should update and render.
 
-    let input = INPUT_STATE.borrow(cs).borrow_mut();
-
-    // debounce and set state accordingly
-    input.confirm_queue = input.confirm_queue << 1 | u8::from(confirm);
-    input.back_queue = input.back_queue << 1 | u8::from(back);
-    input.left_queue = input.left_queue << 1 | u8::from(left);
-    input.right_queue = input.right_queue << 1 | u8::from(right);
-
-    let update = |state: &mut ButtonState, queue: u8| {
-        *state = match (state, queue & 0b11) {
-            (ButtonState::Released(_), 0b11) => ButtonState::Pressed(time),
-            (ButtonState::Pressed(_), 0b00) => ButtonState::Released(time),
-            (s, _) => s,
-        }
-    };
-
-    update(&mut input.confirm, input.confirm_queue);
-    update(&mut input.back, input.back_queue);
-    update(&mut input.left, input.left_queue);
-    update(&mut input.right, input.right_queue);
+    cortex_m::interrupt::free(|cs| {});
 }
 
 enum State {
