@@ -1,4 +1,4 @@
-use atomic_polyfill::Ordering;
+use embedded_time::duration::Extensions;
 use pio::ArrayVec;
 
 use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState};
@@ -50,15 +50,10 @@ impl SubState for SnakeState {
         match self {
             SnakeState::Menu { selected, frame } => {
                 *frame = (*frame + 1) % 16;
-                match (
-                    input.confirm.load(Ordering::Acquire),
-                    input.back.load(Ordering::Acquire),
-                    input.left.load(Ordering::Acquire),
-                    input.right.load(Ordering::Acquire),
-                ) {
-                    // Start playing if button is pressed
-                    (1 | 2, 0, 0, 0) => *state = SnakeState::play(),
-                    _ => (),
+
+                match input {
+                    x if x.is_just_confirm() => *self = SnakeState::play(),
+                    _ => (), // TODO: implement stuff
                 }
             }
             SnakeState::Play {
@@ -66,21 +61,15 @@ impl SubState for SnakeState {
                 snake,
                 apple,
             } => {
-                let new_direction = match (
-                    input.left.load(Ordering::Acquire),
-                    input.right.load(Ordering::Acquire),
-                    input.confirm.load(Ordering::Acquire),
-                    input.back.load(Ordering::Acquire),
-                ) {
-                    (1 | 2, 0, _, _) => direction.rotate_ccwise(),
-                    (0, 1 | 2, _, _) => direction.rotate_cwise(),
-                    _ => *direction,
-                };
-
-                *direction = new_direction;
+                match input {
+                    x if x.is_back() => todo!("How 2 go back?"),
+                    x if x.is_just_left() => *direction = direction.rotate_ccwise(),
+                    x if x.is_just_right() => *direction = direction.rotate_cwise(),
+                    _ => (),
+                }
 
                 // move snake in the direction
-                let new_head = snake.last().unwrap().add_dir(new_direction);
+                let new_head = snake.last().unwrap().add_dir(*direction);
 
                 // CHeck position is whithin bounds
                 if let Some(new_head) = new_head {
@@ -92,10 +81,12 @@ impl SubState for SnakeState {
 
                     snake[snake_len - 1] = new_head;
                 } else {
-                    *state = SnakeState::menu();
+                    *self = SnakeState::menu();
                 }
             }
         }
+
+        500_u32.milliseconds()
     }
 
     fn render(&self, framebuffer: &mut Framebuffer) {

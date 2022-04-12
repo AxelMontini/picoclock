@@ -13,8 +13,8 @@ panic-probe = { version = "0.2", features = ["print-rtt"] }
 rp-pico = { version = "0.3.0" }
 cortex-m = "0.7.2"
 cortex-m-rt = { version = "0.7" }
-# cortex-m-rtic = "0.6.0-rc.4"
-embedded-time = "0.12.0"
+cortex-m-rtic = "1.0.0"
+fugit = "0.3.5"
 # panic-halt = "0.2.0"
 embedded-hal = "0.2.5"
 # cortex-m-rtic = "0.6.0-alpha.5"

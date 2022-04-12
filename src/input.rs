@@ -1,27 +1,49 @@
+use embedded_time::duration::Milliseconds;
 use rp_pico::hal::clocks::SystemClock;
 
-use crate::{Instant, LEFT_BUTTON, LeftButtonPin, RightButtonPin, ConfirmButtonPin, BackButtonPin};
-
-/// Update input state. Return 
-pub fn update_input_state(left_button: &LeftButtonPin, right_button: &RightButtonPin, confirm_button: &ConfirmButtonPin, back_button: &BackButtonPin, clock: &SystemClock) {
-    
-}
+use crate::Instant;
 
 /// should be greater than 10 according to [`the docs`](https://docs.rs/rp2040-hal/latest/rp2040_hal/timer/struct.Alarm0.html)
 const BUTTON_DEBOUNCE_TIME: Milliseconds = Milliseconds(50);
 
 /// What button has been pressed most recently
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ButtonState {
-    /// Was pressed at instant
-    Pressed(Instant),
-    /// Was released at instant
-    Released(Instant),
+    /// Was pressed at a specific time and `true` if the action is new (becomes `false` after an update has ran).
+    Pressed(bool, Instant),
+    /// Was released at a specific time and `true` if the action is new (becomes `false` after an update has ran).
+    Released(bool, Instant),
+}
+
+impl ButtonState {
+    pub fn is_pressed(&self) -> bool {
+        match self {
+            Self::Pressed(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_released(&self) -> bool {
+        !self.is_pressed()
+    }
+
+    pub fn is_just_pressed(&self) -> bool {
+        match self {
+            Self::Pressed(true, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_just_released(&self) -> bool {
+        match self {
+            Self::Released(true, _) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Current input state.
-/// The right `ButtonState` is determined from the samples (LSB is newest sample).
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct InputState {
     pub confirm: ButtonState,
     pub back: ButtonState,
@@ -32,10 +54,50 @@ pub struct InputState {
 impl InputState {
     pub fn new(time: Instant) -> Self {
         Self {
-            confirm: ButtonState::Released(time),
-            back: ButtonState::Released(time),
-            left: ButtonState::Released(time),
-            right: ButtonState::Released(time),
+            confirm: ButtonState::Released(false, time),
+            back: ButtonState::Released(false, time),
+            left: ButtonState::Released(false, time),
+            right: ButtonState::Released(false, time),
         }
+    }
+
+    /// `true` iff left is pressed and right is released
+    pub fn is_left(&self) -> bool {
+        self.left.is_pressed() && self.right.is_released()
+    }
+
+    /// `true` iff left was just pressed and right is released
+    pub fn is_just_left(&self) -> bool {
+        self.left.is_just_pressed() && self.right.is_released()
+    }
+
+    /// `true` iff right is pressed and left is released
+    pub fn is_right(&self) -> bool {
+        self.right.is_pressed() && self.left.is_released()
+    }
+
+    /// `true` iff right was just pressed and left is released
+    pub fn is_just_right(&self) -> bool {
+        self.right.is_just_pressed() && self.left.is_released()
+    }
+
+    /// `true` iff back is pressed and confirm is released
+    pub fn is_back(&self) -> bool {
+        self.back.is_pressed() && self.confirm.is_released()
+    }
+
+    /// `true` iff back was just pressed and confirm is released
+    pub fn is_just_back(&self) -> bool {
+        self.back.is_just_pressed() && self.confirm.is_released()
+    }
+
+    /// `true` iff confirm is pressed and back is released
+    pub fn is_confirm(&self) -> bool {
+        self.confirm.is_pressed() && self.back.is_released()
+    }
+
+    /// `true` iff confirm was just pressed and back is released
+    pub fn is_just_confirm(&self) -> bool {
+        self.confirm.is_just_pressed() && self.back.is_released()
     }
 }
