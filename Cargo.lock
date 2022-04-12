@@ -18,16 +18,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 
 [[package]]
-name = "atomic-polyfill"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e686d748538a32325b28d6411dd8a939e7ad5128e5d0023cc4fd3573db456042"
-dependencies = [
- "critical-section",
- "riscv-target",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -331,28 +321,16 @@ checksum = "0744126afe1a6dd7f394cb50a716dbe086cb06e255e53d8d0185d82828358fb5"
 name = "picoclock"
 version = "0.1.0"
 dependencies = [
- "atomic-polyfill",
  "bitvec",
  "cortex-m",
  "cortex-m-rt",
  "embedded-hal",
  "embedded-time",
  "panic-probe",
- "pio 0.1.0",
+ "pio",
  "rp-pico",
  "rp2040-boot2",
  "rtt-target",
-]
-
-[[package]]
-name = "pio"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "593b4978951e32f8dd5b76203503a9dd8dc4665e4bcb4f7fe8e03e33b9f7abc0"
-dependencies = [
- "arrayvec",
- "num_enum",
- "paste",
 ]
 
 [[package]]
@@ -472,7 +450,7 @@ dependencies = [
  "itertools",
  "nb 1.0.0",
  "paste",
- "pio 0.2.0",
+ "pio",
  "rand_core",
  "rp2040-pac",
  "usb-device",

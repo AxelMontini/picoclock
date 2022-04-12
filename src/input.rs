@@ -1,4 +1,3 @@
-use cortex_m::interrupt::CriticalSection;
 use rp_pico::hal::clocks::SystemClock;
 
 use crate::{Instant, LEFT_BUTTON, LeftButtonPin, RightButtonPin, ConfirmButtonPin, BackButtonPin};
@@ -24,10 +23,10 @@ pub enum ButtonState {
 /// The right `ButtonState` is determined from the samples (LSB is newest sample).
 #[derive(PartialEq, Eq, Debug)]
 pub struct InputState {
-    confirm: ButtonState,
-    back: ButtonState,
-    left: ButtonState,
-    right: ButtonState,
+    pub confirm: ButtonState,
+    pub back: ButtonState,
+    pub left: ButtonState,
+    pub right: ButtonState,
 }
 
 impl InputState {
