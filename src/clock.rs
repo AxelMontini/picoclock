@@ -1,7 +1,6 @@
-use embedded_time::duration::*;
-use rp_pico::hal::rtc::DateTime;
+use fugit::ExtU64;
 
-use crate::{SubState, input::InputState};
+use crate::{SubState, input::InputState, Duration};
 
 pub enum ClockState {
     Time {
@@ -10,8 +9,8 @@ pub enum ClockState {
 }
 
 impl SubState for ClockState {
-    fn update(&mut self, input: &InputState) -> Milliseconds {
-        1000.milliseconds()
+    fn update(&mut self, input: &InputState) -> Duration {
+        1000.millis()
     }
 
     fn render(&self, framebuffer: &mut crate::Framebuffer) {

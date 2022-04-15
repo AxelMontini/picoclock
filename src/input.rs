@@ -1,5 +1,4 @@
 use embedded_time::duration::Milliseconds;
-use rp_pico::hal::clocks::SystemClock;
 
 use crate::Instant;
 

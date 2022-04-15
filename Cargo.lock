@@ -427,12 +427,14 @@ dependencies = [
  "cortex-m-rt",
  "cortex-m-rtic",
  "embedded-hal",
+ "embedded-time",
  "fugit",
  "panic-probe",
  "pio",
  "rp-pico",
  "rp2040-boot2",
  "rtt-target",
+ "systick-monotonic",
 ]
 
 [[package]]
@@ -699,6 +701,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
+]
+
+[[package]]
+name = "systick-monotonic"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57e71d8e4587d8f434b88b9aef901987f46164df813a3a1d6bdf3a58debf67f0"
+dependencies = [
+ "cortex-m",
+ "fugit",
+ "rtic-monotonic",
 ]
 
 [[package]]

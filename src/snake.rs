@@ -1,7 +1,8 @@
 use embedded_time::duration::Extensions;
+use fugit::ExtU64;
 use pio::ArrayVec;
 
-use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState};
+use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState, Duration};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Direction {
@@ -46,7 +47,7 @@ pub enum SnakeState {
 }
 
 impl SubState for SnakeState {
-    fn update(&mut self, input: &InputState) -> embedded_time::duration::Milliseconds {
+    fn update(&mut self, input: &InputState) -> Duration {
         match self {
             SnakeState::Menu { selected, frame } => {
                 *frame = (*frame + 1) % 16;
@@ -86,7 +87,7 @@ impl SubState for SnakeState {
             }
         }
 
-        500_u32.milliseconds()
+        500.millis()
     }
 
     fn render(&self, framebuffer: &mut Framebuffer) {

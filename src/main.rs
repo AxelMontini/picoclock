@@ -15,7 +15,6 @@ use embedded_hal::digital::v2::InputPin;
 use input::InputState;
 use panic_probe as _; // needed for panic probe stuff
 
-
 use rp_pico::hal::rtc::DateTime;
 use rp_pico::hal::{
     self,
@@ -24,12 +23,13 @@ use rp_pico::hal::{
     prelude::*,
 };
 
+use rtic::Monotonic;
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
 use rtt_target::rprintln;
 use rtt_target::rtt_init_print;
-use rtic_monotonic::Monotonic;
 use snake::{Direction, SnakeState};
+use systick_monotonic::Systick;
 
 mod clock;
 mod input;
@@ -41,24 +41,33 @@ type LeftButtonPin = Pin<hal::gpio::bank0::Gpio17, hal::gpio::Input<hal::gpio::P
 type BackButtonPin = Pin<hal::gpio::bank0::Gpio15, hal::gpio::Input<hal::gpio::PullDown>>;
 type ConfirmButtonPin = Pin<hal::gpio::bank0::Gpio16, hal::gpio::Input<hal::gpio::PullDown>>;
 
+pub(crate) type MonoSystick = Systick<1000>;
+pub(crate) type Instant = <crate::MonoSystick as Monotonic>::Instant;
+pub(crate) type Duration = <crate::MonoSystick as Monotonic>::Duration;
+
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0])]
 mod app {
     use super::*;
+    use embedded_time::fixed_point::FixedPoint;
+    use systick_monotonic::*;
+
+    #[monotonic(binds = SysTick, default = true)]
+    type Mono = MonoSystick;
 
     #[local]
     struct Local {
         tx: hal::pio::Tx<(pac::PIO0, hal::pio::SM0)>,
-    }
-
-    #[shared]
-    struct Shared {
         right_button: RightButtonPin,
         left_button: LeftButtonPin,
         confirm_button: ConfirmButtonPin,
         back_button: BackButtonPin,
+    }
+
+    #[shared]
+    struct Shared {
         input_state: InputState,
         //alarm0: hal::timer::Alarm0,
-        clock: ClockWrap,
+        timer: hal::Timer,
         rtc: hal::rtc::RealTimeClock,
         state: State,
         framebuffer: Framebuffer,
@@ -74,7 +83,7 @@ mod app {
     }
 
     #[init]
-    fn init(_: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         // Print to pico probe
         rtt_init_print!();
 
@@ -84,6 +93,7 @@ mod app {
 
         // Set up the watchdog driver - needed by the clock setup code
         let mut watchdog = hal::watchdog::Watchdog::new(pac.WATCHDOG);
+        let mut mono = Systick::new(core.SYST, rp_pico::XOSC_CRYSTAL_FREQ);
 
         // Configure the clocks
         //
@@ -100,10 +110,10 @@ mod app {
         .ok()
         .unwrap();
 
-        // The delay object lets us wait for specified amounts of time (in
-        // milliseconds)
-        let mut delay =
-            cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
+        // // The delay object lets us wait for specified amounts of time (in
+        // // milliseconds) //Not used
+        // let mut delay =
+        //     cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
 
         // timer for periodic tasks, interrupts, ...
         let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
@@ -164,7 +174,7 @@ mod app {
         let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
         let installed = pio.install(&program).unwrap();
 
-        let (mut sm, _, mut tx) = hal::pio::PIOBuilder::from_program(installed)
+        let (mut sm, _, tx) = hal::pio::PIOBuilder::from_program(installed)
             .buffers(hal::pio::Buffers::OnlyTx)
             .out_shift_direction(hal::pio::ShiftDirection::Left)
             .autopull(true)
@@ -177,7 +187,7 @@ mod app {
         sm.start();
 
         // Initial state
-        let mut state = State::Clock(ClockState::Time { frame: 0 });
+        let state = State::Clock(ClockState::Time { frame: 0 });
 
         // Control buttons (for interface). They must be set globally to allow
         // the interrupt to read them
@@ -186,38 +196,31 @@ mod app {
         let confirm_button = pins.gpio16.into_pull_down_input();
         let back_button = pins.gpio15.into_pull_down_input();
 
-        let rtc = hal::rtc::RealTimeClock::new(
-            pac.RTC,
-            clocks.rtc_clock,
-            &mut pac.RESETS,
-            super::INITIAL_DATE,
-        )
-        .unwrap();
-
-        let clock = ClockWrap::new(timer);
-        let input_state = InputState::new(clock.try_now().unwrap());
+        let input_state = InputState::new(mono.now()); // initial input last debounce
 
         let framebuffer = Framebuffer::default();
 
         let shared = Shared {
-            left_button,
-            right_button,
-            confirm_button,
-            back_button,
-            clock,
+            timer,
             input_state,
             state,
             framebuffer,
             rtc,
         };
 
-        let local = Local { tx };
+        let local = Local {
+            tx,
+            left_button,
+            right_button,
+            confirm_button,
+            back_button,
+        };
 
-        (shared, local, init::Monotonics())
+        (shared, local, init::Monotonics(mono))
     }
 
     #[task(priority = 1, shared = [framebuffer], local = [tx])]
-    fn draw(ctx: draw::Context) {
+    fn draw(mut ctx: draw::Context) {
         // An interrupt should never stop this, since delays in the signal could be interpreted as "stop" by the leds.
         let tx = ctx.local.tx;
         ctx.shared.framebuffer.lock(|framebuffer| {
@@ -271,35 +274,35 @@ mod app {
     #[task(priority = 1, shared = [state, input_state])]
     fn update(ctx: update::Context) {
         (ctx.shared.input_state, ctx.shared.state).lock(|input, state| {
-            let refresh_rate = match state {
+            let next_update = match state {
                 State::Clock(clock) => clock.update(input),
                 State::Snake(snake) => snake.update(input),
-                State::Settings => todo!(),
+                State::Settings => todo!("Implement settings update"),
             };
 
             render::spawn();
-            update::spawn_at(monotonics::now() + refresh_rate);
+            update::spawn_at(monotonics::now() + next_update);
         });
     }
 
     #[task(priority = 1, shared = [state, framebuffer])]
     fn render(ctx: render::Context) {
         // Lock the framebuffer to be sure
-        framebuffer.lock(|framebuffer| match state {
+        (ctx.shared.state, ctx.shared.framebuffer).lock(|state, framebuffer| match state {
             State::Clock(clock) => clock.render(framebuffer),
             State::Snake(snake) => snake.render(framebuffer),
-            State::Settings => todo!(),
+            State::Settings => todo!("Implement settings render"),
         });
 
         draw::spawn();
     }
 
     /// handle gpio interrupts and debounce them
-    #[task(binds = IO_IRQ_BANK0, priority = 5, shared = [input_state, left_button, right_button, confirm_button, back_button])]
-    fn debounce_input(ctx: debounce_input::Context) {
-        let new_state = input_state.clone();
-        let b = ctx.right_button;
-        update::spawn(); // update if input changed
+    #[task(binds = IO_IRQ_BANK0, priority = 2, shared = [input_state], local = [left_button, right_button, confirm_button, back_button])]
+    fn debounce_input(mut ctx: debounce_input::Context) {
+        ctx.shared.input_state.lock(|input_state| {
+            update::spawn(); // update (starts after this task ends due to priority diff)
+        });
     }
 }
 
@@ -331,7 +334,7 @@ pub(crate) trait SubState {
     /// E.g.: Call to `update` happens at `15ms`. It returns `50ms` after running for `10ms`.
     /// Then the next update should happen at time `65ms`, which is only `40ms` after execution of
     /// `update` stops.
-    fn update(&mut self, input: &InputState) -> embedded_time::duration::Milliseconds;
+    fn update(&mut self, input: &InputState) -> Duration;
 
     /// Render the state to the framebuffer.
     /// This is called automatically after an `update`.
@@ -392,9 +395,7 @@ impl<const FREQ: usize> ClockWrap<FREQ> {
     }
 }
 
-
-
-enum State {
+pub enum State {
     Clock(ClockState),
     Snake(SnakeState),
     Settings,
