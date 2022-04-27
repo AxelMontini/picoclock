@@ -39,6 +39,23 @@ impl ButtonState {
             _ => false,
         }
     }
+
+    pub fn set_new(&mut self, new: bool) {
+        let v = match self {
+            ButtonState::Pressed(v, i) => v,
+            ButtonState::Released(v, i) => v,
+        };
+
+        *v = new;
+    }
+
+    /// Update this state with released/pressed and an instant
+    pub fn set_state(&mut self, pressed: bool, time: Instant) {
+        match pressed {
+            true => *self = Self::Pressed(true, time),
+            false => *self = Self::Released(true, time),
+        }
+    }
 }
 
 /// Current input state.
@@ -58,6 +75,14 @@ impl InputState {
             left: ButtonState::Released(false, time),
             right: ButtonState::Released(false, time),
         }
+    }
+
+    /// Turn the state into an "old state" (already went through an `update`)
+    pub fn set_old(&mut self) {
+        self.confirm.set_new(false);
+        self.back.set_new(false);
+        self.right.set_new(false);
+        self.left.set_new(false);
     }
 
     /// `true` iff left is pressed and right is released

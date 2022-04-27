@@ -6,6 +6,7 @@ use core::fmt::{self, Debug};
 use core::ops::Deref;
 use core::sync::atomic::Ordering;
 use core::{cell::RefCell, ops::Add};
+use fugit::ExtU64;
 
 use clock::ClockState;
 use cortex_m::interrupt::{CriticalSection, Mutex};
@@ -24,10 +25,7 @@ use rp_pico::hal::{
 };
 
 use rtic::Monotonic;
-// A shorter alias for the Hardware Abstraction Layer, which provides
-// higher-level drivers.
-use rtt_target::rprintln;
-use rtt_target::rtt_init_print;
+use rtt_target::{rprint, rprintln, rtt_init_print};
 use snake::{Direction, SnakeState};
 use systick_monotonic::Systick;
 
@@ -45,11 +43,10 @@ pub(crate) type MonoSystick = Systick<1000>;
 pub(crate) type Instant = <crate::MonoSystick as Monotonic>::Instant;
 pub(crate) type Duration = <crate::MonoSystick as Monotonic>::Duration;
 
-#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0])]
+#[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0, TIMER_IRQ_1])]
 mod app {
     use super::*;
     use embedded_time::fixed_point::FixedPoint;
-    use systick_monotonic::*;
 
     #[monotonic(binds = SysTick, default = true)]
     type Mono = MonoSystick;
@@ -87,13 +84,14 @@ mod app {
         // Print to pico probe
         rtt_init_print!();
 
-        // Grab our singleton objects
-        let mut pac = pac::Peripherals::take().unwrap();
-        let core = pac::CorePeripherals::take().unwrap();
+        // // Grab our singleton objects // in ctx
+        // let mut pac = pac::Peripherals::take().unwrap();
+        // let core = pac::CorePeripherals::take().unwrap();
 
+        let mut pac = ctx.device;
         // Set up the watchdog driver - needed by the clock setup code
         let mut watchdog = hal::watchdog::Watchdog::new(pac.WATCHDOG);
-        let mut mono = Systick::new(core.SYST, rp_pico::XOSC_CRYSTAL_FREQ);
+        let mut mono = MonoSystick::new(ctx.core.SYST, rp_pico::XOSC_CRYSTAL_FREQ * 10);
 
         // Configure the clocks
         //
@@ -189,8 +187,7 @@ mod app {
         // Initial state
         let state = State::Clock(ClockState::Time { frame: 0 });
 
-        // Control buttons (for interface). They must be set globally to allow
-        // the interrupt to read them
+        // Control buttons (for interface).
         let left_button = pins.gpio17.into_pull_down_input();
         let right_button = pins.gpio18.into_pull_down_input();
         let confirm_button = pins.gpio16.into_pull_down_input();
@@ -216,10 +213,14 @@ mod app {
             back_button,
         };
 
+        // start update once
+        update::spawn(false).expect("update for the first time");
+        debounce_input::spawn().expect("debouncing first time");
+
         (shared, local, init::Monotonics(mono))
     }
 
-    #[task(priority = 1, shared = [framebuffer], local = [tx])]
+    #[task(priority = 2, shared = [framebuffer], local = [tx])]
     fn draw(mut ctx: draw::Context) {
         // An interrupt should never stop this, since delays in the signal could be interpreted as "stop" by the leds.
         let tx = ctx.local.tx;
@@ -271,22 +272,32 @@ mod app {
         });
     }
 
-    #[task(priority = 1, shared = [state, input_state])]
-    fn update(ctx: update::Context) {
-        (ctx.shared.input_state, ctx.shared.state).lock(|input, state| {
-            let next_update = match state {
+    /// Capacity must be 2, since this task spawns itself after some time
+    /// `debounce = true` indicates that this update was spawned by debounce and thus no scheduling should be performed
+    #[task(priority = 2, capacity = 2, shared = [state, input_state])]
+    fn update(ctx: update::Context, debounce: bool) {
+        rprintln!("Update");
+        let next_update = (ctx.shared.input_state, ctx.shared.state).lock(|input, state| {
+            let nu = match state {
                 State::Clock(clock) => clock.update(input),
                 State::Snake(snake) => snake.update(input),
                 State::Settings => todo!("Implement settings update"),
             };
 
-            render::spawn();
-            update::spawn_at(monotonics::now() + next_update);
+            input.set_old(); // mark as already processed so that the next update cycle doesn't
+                             // have duplicated button pressed
+            nu
         });
+
+        render::spawn().unwrap();
+        if !debounce {
+            update::spawn_at(monotonics::now() + next_update, false).unwrap();
+        }
     }
 
-    #[task(priority = 1, shared = [state, framebuffer])]
+    #[task(priority = 2, shared = [state, framebuffer])]
     fn render(ctx: render::Context) {
+        rprintln!("Render");
         // Lock the framebuffer to be sure
         (ctx.shared.state, ctx.shared.framebuffer).lock(|state, framebuffer| match state {
             State::Clock(clock) => clock.render(framebuffer),
@@ -294,14 +305,59 @@ mod app {
             State::Settings => todo!("Implement settings render"),
         });
 
-        draw::spawn();
+        draw::spawn().unwrap();
     }
 
-    /// handle gpio interrupts and debounce them
-    #[task(binds = IO_IRQ_BANK0, priority = 2, shared = [input_state], local = [left_button, right_button, confirm_button, back_button])]
+    /// debounce inputs with a task that runs every X milliseconds
+    #[task(priority = 1, shared = [input_state], local = [left_button, right_button, confirm_button, back_button])]
     fn debounce_input(mut ctx: debounce_input::Context) {
         ctx.shared.input_state.lock(|input_state| {
-            update::spawn(); // update (starts after this task ends due to priority diff)
+            let (right_button, left_button, back_button, confirm_button) = (
+                ctx.local.right_button,
+                ctx.local.left_button,
+                ctx.local.back_button,
+                ctx.local.confirm_button,
+            );
+
+            let mut changed = false;
+            let time = monotonics::now();
+            let r_high = right_button.is_high().unwrap();
+            let l_high = left_button.is_high().unwrap();
+            let c_high = confirm_button.is_high().unwrap();
+            let b_high = back_button.is_high().unwrap();
+
+            // Check if state has changed (with a xor), then update state and enable the correct interrupt
+            if input_state.right.is_pressed() ^ r_high {
+                rprint!("R={} ", r_high);
+                input_state.right.set_state(r_high, time);
+                changed = true;
+            }
+
+            if input_state.left.is_pressed() ^ l_high {
+                rprint!("L={} ", l_high);
+                input_state.left.set_state(l_high, time);
+                changed = true;
+            }
+
+            if input_state.confirm.is_pressed() ^ c_high {
+                rprint!("C={} ", c_high);
+                input_state.confirm.set_state(c_high, time);
+                changed = true;
+            }
+
+            if input_state.back.is_pressed() ^ b_high {
+                rprint!("B={} ", b_high);
+                input_state.back.set_state(b_high, time);
+                changed = true;
+            }
+
+            if changed {
+                rprintln!("Change");
+                update::spawn(true).unwrap(); // update (starts after this task ends due to priority diff)
+            }
+
+            let debounce_interval = 25.millis();
+            debounce_input::spawn_after(debounce_interval).unwrap(); // next debounce
         });
     }
 }
