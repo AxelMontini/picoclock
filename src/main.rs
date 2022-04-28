@@ -24,6 +24,7 @@ use rp_pico::hal::{
     prelude::*,
 };
 
+use hal::rtc::RealTimeClock;
 use rtic::Monotonic;
 use rtt_target::{rprint, rprintln, rtt_init_print};
 use snake::{Direction, SnakeState};
@@ -65,7 +66,7 @@ mod app {
         input_state: InputState,
         //alarm0: hal::timer::Alarm0,
         timer: hal::Timer,
-        rtc: hal::rtc::RealTimeClock,
+        rtc: RealTimeClock,
         state: State,
         framebuffer: Framebuffer,
     }
@@ -185,7 +186,7 @@ mod app {
         sm.start();
 
         // Initial state
-        let state = State::Clock(ClockState::Time { frame: 0 });
+        let state = State::Clock(ClockState::Time { frame: 0, datetime: INITIAL_DATE });
 
         // Control buttons (for interface).
         let left_button = pins.gpio17.into_pull_down_input();
@@ -274,20 +275,21 @@ mod app {
 
     /// Capacity must be 2, since this task spawns itself after some time
     /// `debounce = true` indicates that this update was spawned by debounce and thus no scheduling should be performed
-    #[task(priority = 2, capacity = 2, shared = [state, input_state])]
+    #[task(priority = 2, capacity = 2, shared = [state, input_state, rtc])]
     fn update(ctx: update::Context, debounce: bool) {
         rprintln!("Update");
-        let next_update = (ctx.shared.input_state, ctx.shared.state).lock(|input, state| {
-            let nu = match state {
-                State::Clock(clock) => clock.update(input),
-                State::Snake(snake) => snake.update(input),
-                State::Settings => todo!("Implement settings update"),
-            };
+        let next_update =
+            (ctx.shared.input_state, ctx.shared.state, ctx.shared.rtc).lock(|input, state, rtc| {
+                let nu = match state {
+                    State::Clock(clock) => clock.update((input, rtc)),
+                    State::Snake(snake) => snake.update(input),
+                    State::Settings => todo!("Implement settings update"),
+                };
 
-            input.set_old(); // mark as already processed so that the next update cycle doesn't
-                             // have duplicated button pressed
-            nu
-        });
+                input.set_old(); // mark as already processed so that the next update cycle doesn't
+                                 // have duplicated button pressed
+                nu
+            });
 
         render::spawn().unwrap();
         if !debounce {
@@ -379,7 +381,8 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 /// framebuffer type. The bottom left corner is at position `(0,0)`
 type Framebuffer = [[Color; 32]; 16];
 
-pub(crate) trait SubState {
+pub(crate) trait SubState<'d> {
+    type Data: 'd;
     /// Update cycle for this state.
     ///
     /// # Return
@@ -390,7 +393,7 @@ pub(crate) trait SubState {
     /// E.g.: Call to `update` happens at `15ms`. It returns `50ms` after running for `10ms`.
     /// Then the next update should happen at time `65ms`, which is only `40ms` after execution of
     /// `update` stops.
-    fn update(&mut self, input: &InputState) -> Duration;
+    fn update(&mut self, data: Self::Data) -> Duration;
 
     /// Render the state to the framebuffer.
     /// This is called automatically after an `update`.
@@ -466,8 +469,21 @@ pub struct Color {
 }
 
 impl Color {
+    /// RGB Color
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self::rgb(r, g, b)
+    }
+
+    /// RGB Color
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
+    }
+
+    /// HSV Color (approximated to fit in RGB)
+    /// Angle is in degrees
+    pub const fn hsv(h: f32, s: f32, v: f32) -> Self {
+        let c = s * v;
+        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
     }
 
     /// Make this color into a word.

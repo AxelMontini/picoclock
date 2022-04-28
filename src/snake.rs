@@ -46,8 +46,10 @@ pub enum SnakeState {
     },
 }
 
-impl SubState for SnakeState {
-    fn update(&mut self, input: &InputState) -> Duration {
+impl<'d> SubState<'d> for SnakeState {
+    type Data = &'d InputState;
+
+    fn update(&mut self, input: Self::Data) -> Duration {
         match self {
             SnakeState::Menu { selected, frame } => {
                 *frame = (*frame + 1) % 16;
