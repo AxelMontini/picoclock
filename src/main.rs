@@ -3,7 +3,7 @@
 
 use core::borrow::BorrowMut;
 use core::fmt::{self, Debug};
-use core::ops::Deref;
+use core::ops::{Deref, Sub};
 use core::sync::atomic::Ordering;
 use core::{cell::RefCell, ops::Add};
 use fugit::ExtU64;
@@ -14,6 +14,8 @@ use cortex_m::interrupt::{CriticalSection, Mutex};
 use cortex_m_rt::entry;
 use embedded_hal::digital::v2::InputPin;
 use input::InputState;
+use nalgebra::Vector2;
+use palette::rgb;
 use panic_probe as _; // needed for panic probe stuff
 
 use rp_pico::hal::rtc::DateTime;
@@ -43,6 +45,7 @@ type ConfirmButtonPin = Pin<hal::gpio::bank0::Gpio16, hal::gpio::Input<hal::gpio
 pub(crate) type MonoSystick = Systick<1000>;
 pub(crate) type Instant = <crate::MonoSystick as Monotonic>::Instant;
 pub(crate) type Duration = <crate::MonoSystick as Monotonic>::Duration;
+pub(crate) type Color = rgb::Srgb<u8>;
 
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0, TIMER_IRQ_1])]
 mod app {
@@ -186,7 +189,11 @@ mod app {
         sm.start();
 
         // Initial state
-        let state = State::Clock(ClockState::Time { frame: 0, datetime: INITIAL_DATE });
+        let state = State::Clock(ClockState::Time {
+            frame: 0,
+            datetime: INITIAL_DATE,
+            rainbow_steps: 7,
+        });
 
         // Control buttons (for interface).
         let left_button = pins.gpio17.into_pull_down_input();
@@ -237,14 +244,14 @@ mod app {
                 if i & 1 == 1 {
                     let row_iter = row.iter().rev();
                     row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
+                        while !tx.write(to_word(color)) {
                             cortex_m::asm::nop();
                         }
                     });
                 } else {
                     let row_iter = row.iter();
                     row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
+                        while !tx.write(to_word(color)) {
                             cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
                         }
                     });
@@ -257,14 +264,14 @@ mod app {
                 if i & 1 == 1 {
                     let row_iter = row.iter().rev();
                     row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
+                        while !tx.write(to_word(color)) {
                             cortex_m::asm::nop();
                         }
                     });
                 } else {
                     let row_iter = row.iter();
                     row_iter.for_each(|color| {
-                        while !tx.write(color.to_word()) {
+                        while !tx.write(to_word(color)) {
                             cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
                         }
                     });
@@ -381,6 +388,71 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 /// framebuffer type. The bottom left corner is at position `(0,0)`
 type Framebuffer = [[Color; 32]; 16];
 
+pub enum Shape {
+    /// Circle with center and radius
+    Circle(Position, usize),
+    /// Line between two points
+    Line(Position, Position),
+    Dot(Position),
+}
+
+/// Trait that allows to draw basic geometric shapes.
+trait Draw {
+    /// Draw a given shape on this thing, with given color
+    fn draw(&mut self, shape: &Shape, color: &Color) {
+        match shape {
+            Shape::Circle(c, r) => {
+                todo!("implement")
+            }
+            Shape::Line(a, b) => {
+                // Check if vertical or horizontal (optimized)
+                // Otherwise use Bresenham's algorithm
+                if a.x == b.x {
+                    (a.y.min(b.y)..=a.y.max(b.y)).map(|y| Position::new(a.x, y)).for_each(|p| {
+                        self.get_pos_mut(p).map(|c| *c = *color);
+                    });
+                } else if a.y == b.y {
+                    (a.x.min(b.x)..=a.x.max(b.x)).map(|x| Position::new(x, a.y)).for_each(|p| {
+                        self.get_pos_mut(p).map(|c| *c = *color);
+                    });
+                } else {
+                    todo!("Bresenham");
+                }
+            }
+            Shape::Dot(p) => {
+                self.get_pos_mut(*p).map(|c| *c = *color);
+            }
+        }
+    }
+
+    /// Get the color at position, with mutable access. Used for drawing
+    fn get_pos_mut(&mut self, position: Position) -> Option<&mut Color>;
+}
+
+impl Draw for Framebuffer {
+    fn get_pos_mut(&mut self, position: Position) -> Option<&mut Color> {
+        self.get_mut(position.y as usize)
+            .and_then(|row| row.get_mut(position.x as usize))
+    }
+}
+
+/// Return `Some(p)` if the position is in bounds, `None` otherwise
+pub fn bounded(p: Position) -> Option<Position> {
+    match (p.x, p.y) {
+        (0..=31, 0..=15) => Some(p),
+        _ => None,
+    }
+}
+
+pub type Position = Vector2<i8>;
+
+/// Make this color into a word.
+/// Intended to be passed to the PIO
+/// green: `31:24`, red: `23:16`, blue: `15:8`, zero: `7:0`
+pub fn to_word(c: &Color) -> u32 {
+    u32::from_be_bytes([c.green, c.red, c.blue, 0])
+}
+
 pub(crate) trait SubState<'d> {
     type Data: 'd;
     /// Update cycle for this state.
@@ -398,44 +470,6 @@ pub(crate) trait SubState<'d> {
     /// Render the state to the framebuffer.
     /// This is called automatically after an `update`.
     fn render(&self, framebuffer: &mut Framebuffer);
-}
-
-/// A position that is in range `0..16`
-#[derive(Debug, Clone, Copy)]
-pub struct Position {
-    x: u8,
-    y: u8,
-}
-
-impl Position {
-    pub fn new(x: u8, y: u8) -> Self {
-        Self { x, y }
-    }
-
-    pub fn add_dir(self, dir: Direction) -> Option<Self> {
-        match dir {
-            Direction::PosX => {
-                ((0..15).contains(&self.x)).then(|| Position::new(self.x + 1, self.y))
-            }
-            Direction::NegX => {
-                ((1..16).contains(&self.x)).then(|| Position::new(self.x - 1, self.y))
-            }
-            Direction::PosY => {
-                ((0..15).contains(&self.y)).then(|| Position::new(self.x, self.y + 1))
-            }
-            Direction::NegY => {
-                ((1..16).contains(&self.y)).then(|| Position::new(self.x, self.y - 1))
-            }
-        }
-    }
-}
-
-impl Add for Position {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Position::new(self.x + rhs.x, self.y + rhs.y)
-    }
 }
 
 struct ClockWrap<const FREQ: usize> {
@@ -458,60 +492,4 @@ pub enum State {
     Clock(ClockState),
     Snake(SnakeState),
     Settings,
-}
-
-/// GRB Color
-#[derive(Copy, Clone, Debug, Default)]
-pub struct Color {
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-impl Color {
-    /// RGB Color
-    pub const fn new(r: u8, g: u8, b: u8) -> Self {
-        Self::rgb(r, g, b)
-    }
-
-    /// RGB Color
-    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self { r, g, b }
-    }
-
-    /// HSV Color (approximated to fit in RGB)
-    /// Angle is in degrees
-    pub const fn hsv(h: f32, s: f32, v: f32) -> Self {
-        let c = s * v;
-        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    }
-
-    /// Make this color into a word.
-    /// Intended to be passed to the PIO
-    /// green: `31:24`, red: `23:16`, blue: `15:8`, zero: `7:0`
-    pub fn to_word(&self) -> u32 {
-        u32::from_be_bytes([self.g, self.r, self.b, 0])
-    }
-
-    // pub fn into_spi_bytes(&self) -> [u8; 9] {
-    //     use bitvec::prelude::*;
-    //     let color = [self.g, self.r, self.b];
-    //     let color = color.view_bits::<Msb0>();
-
-    //     let mut arr = bitarr![Msb0, u8; 0; 8*9];
-
-    //     for i in 0..3 * 8 {
-    //         if color.get(i).unwrap() == true {
-    //             arr.set(i * 3, true);
-    //             arr.set(i * 3 + 1, true);
-    //             arr.set(i * 3 + 2, false);
-    //         } else {
-    //             arr.set(i * 3, true);
-    //             arr.set(i * 3 + 1, false);
-    //             arr.set(i * 3 + 2, false);
-    //         };
-    //     }
-
-    //     arr.into_inner()
-    // }
 }

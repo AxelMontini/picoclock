@@ -1,8 +1,9 @@
 use embedded_time::duration::Extensions;
 use fugit::ExtU64;
+use nalgebra::Vector2;
 use pio::ArrayVec;
 
-use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState, Duration};
+use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState, Duration, bounded};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Direction {
@@ -71,8 +72,15 @@ impl<'d> SubState<'d> for SnakeState {
                     _ => (),
                 }
 
-                // move snake in the direction
-                let new_head = snake.last().unwrap().add_dir(*direction);
+                let dir_vec = match direction {
+                    Direction::PosX => Vector2::new(1, 0),
+                    Direction::NegX => Vector2::new(-1, 0),
+                    Direction::PosY => Vector2::new(0, 1),
+                    Direction::NegY => Vector2::new(0, -1),
+                };
+
+                // move snake in the direction (if within bounds!)
+                let new_head = bounded(snake.last().unwrap() + dir_vec);
 
                 // CHeck position is whithin bounds
                 if let Some(new_head) = new_head {

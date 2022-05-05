@@ -56,11 +56,29 @@ pub fn render_text(
     framebuffer: &mut Framebuffer,
     text: &str,
     origin: Position,
+    colors: impl Iterator<Item = impl Into<Color>>,
+) {
+    render_text_font(framebuffer, text, TABLE, origin, colors)
+}
+
+/// Render some text on the screen.
+/// Needs a framebuffer.
+/// `origin` is from the bottom left corner of the framebuffer
+/// to the bottom left corner of the text.
+/// Letters are 5 tall and width is variable.
+///
+/// `colors` is a slice of colors for each letter.
+/// If color is shorter than the characters, then the function panics.
+pub fn render_text_font<'f>(
+    framebuffer: &mut Framebuffer,
+    text: &str,
+    font: &Font<'f>,
+    origin: Position,
     mut colors: impl Iterator<Item = impl Into<Color>>,
 ) {
     text.chars().fold(origin, |cursor, c| {
-        let bounds = render_char(framebuffer, c, cursor, colors.next().unwrap().into());
-        Position::new(1 + cursor.x + bounds.0 as u8, cursor.y)
+        let bounds = render_char_font(framebuffer, c, font, cursor, colors.next().unwrap().into());
+        Position::new(1 + cursor.x + bounds.0 as i8, cursor.y)
     });
 }
 
@@ -71,12 +89,26 @@ pub fn render_char(
     origin: Position,
     color: Color,
 ) -> (usize, usize) {
+    render_char_font(framebuffer, character, TABLE, origin, color)
+}
+
+/// Font that starts from 0, ascii order
+pub type Font<'f> = [&'f dyn ColorRender];
+
+/// Renders a char in a custom font and returns the bounding box of the rendered char (width, height)
+pub fn render_char_font<'f>(
+    framebuffer: &mut Framebuffer,
+    character: char,
+    font: &Font<'f>,
+    origin: Position,
+    color: Color,
+) -> (usize, usize) {
     if !character.is_ascii() {
         panic!("Not an ascii character: {:x}", character as u64);
     }
 
     let index = character as usize - '0' as usize;
-    let letter = TABLE.get(index).expect("unimplemented character");
+    let letter = font.get(index).expect("unimplemented character");
 
     letter.render(framebuffer, origin, color);
 
@@ -260,7 +292,7 @@ const Z: Letter<3, 5> = Letter::new(&[
     [true, true, true],
 ]);
 const ZERO: Letter<3, 5> = Letter::new(&[
-    [true, true, false],
+    [false, true, false],
     [true, false, true],
     [true, false, true],
     [true, false, true],
