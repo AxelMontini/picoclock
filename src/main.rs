@@ -192,7 +192,7 @@ mod app {
         let state = State::Clock(ClockState::Time {
             frame: 0,
             datetime: INITIAL_DATE,
-            rainbow_steps: 7,
+            rainbow_steps: 100,
         });
 
         // Control buttons (for interface).
@@ -230,52 +230,54 @@ mod app {
 
     #[task(priority = 2, shared = [framebuffer], local = [tx])]
     fn draw(mut ctx: draw::Context) {
-        // An interrupt should never stop this, since delays in the signal could be interpreted as "stop" by the leds.
-        let tx = ctx.local.tx;
-        ctx.shared.framebuffer.lock(|framebuffer| {
-            // drawing takes a while, the FIFO queue must be written to only when it's got space
-            // Also the framebuffer rows are contiguous, but the matrices are connected in series
-            // (writing to the first pixel of the second matrix requires all the pixels of the first
-            // matrix to be written to)
-            // So two loops are required (there could be a way to make it smarter?)
-            // Write Matrix 1 (first 16 leds per row)
-            framebuffer.iter().enumerate().for_each(|(i, row)| {
-                let row = &row[..16];
-                if i & 1 == 1 {
-                    let row_iter = row.iter().rev();
-                    row_iter.for_each(|color| {
-                        while !tx.write(to_word(color)) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                } else {
-                    let row_iter = row.iter();
-                    row_iter.for_each(|color| {
-                        while !tx.write(to_word(color)) {
-                            cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
-                        }
-                    });
-                };
-            });
+        cortex_m::interrupt::free(|cs| {
+            // An interrupt should never stop this, since delays in the signal could be interpreted as "stop" by the leds.
+            let tx = ctx.local.tx;
+            ctx.shared.framebuffer.lock(|framebuffer| {
+                // drawing takes a while, the FIFO queue must be written to only when it's got space
+                // Also the framebuffer rows are contiguous, but the matrices are connected in series
+                // (writing to the first pixel of the second matrix requires all the pixels of the first
+                // matrix to be written to)
+                // So two loops are required (there could be a way to make it smarter?)
+                // Write Matrix 1 (first 16 leds per row)
+                framebuffer.iter().enumerate().for_each(|(i, row)| {
+                    let row = &row[..16];
+                    if i & 1 == 1 {
+                        let row_iter = row.iter().rev();
+                        row_iter.for_each(|color| {
+                            while !tx.write(to_word(color)) {
+                                cortex_m::asm::nop();
+                            }
+                        });
+                    } else {
+                        let row_iter = row.iter();
+                        row_iter.for_each(|color| {
+                            while !tx.write(to_word(color)) {
+                                cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
+                            }
+                        });
+                    };
+                });
 
-            // Write matrix 2 (last 16 leds of row)
-            framebuffer.iter().enumerate().for_each(|(i, row)| {
-                let row = &row[16..];
-                if i & 1 == 1 {
-                    let row_iter = row.iter().rev();
-                    row_iter.for_each(|color| {
-                        while !tx.write(to_word(color)) {
-                            cortex_m::asm::nop();
-                        }
-                    });
-                } else {
-                    let row_iter = row.iter();
-                    row_iter.for_each(|color| {
-                        while !tx.write(to_word(color)) {
-                            cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
-                        }
-                    });
-                };
+                // Write matrix 2 (last 16 leds of row)
+                framebuffer.iter().enumerate().for_each(|(i, row)| {
+                    let row = &row[16..];
+                    if i & 1 == 1 {
+                        let row_iter = row.iter().rev();
+                        row_iter.for_each(|color| {
+                            while !tx.write(to_word(color)) {
+                                cortex_m::asm::nop();
+                            }
+                        });
+                    } else {
+                        let row_iter = row.iter();
+                        row_iter.for_each(|color| {
+                            while !tx.write(to_word(color)) {
+                                cortex_m::asm::nop(); // inefficient way to wait for the queue to have space in it
+                            }
+                        });
+                    };
+                });
             });
         });
     }
@@ -373,11 +375,11 @@ mod app {
 
 pub(crate) const INITIAL_DATE: DateTime = DateTime {
     year: 2022,
-    month: 4,
-    day: 12,
-    day_of_week: hal::rtc::DayOfWeek::Tuesday,
-    hour: 12,
-    minute: 0,
+    month: 5,
+    day: 5,
+    day_of_week: hal::rtc::DayOfWeek::Thursday,
+    hour: 20,
+    minute: 55,
     second: 0,
 };
 
@@ -408,13 +410,17 @@ trait Draw {
                 // Check if vertical or horizontal (optimized)
                 // Otherwise use Bresenham's algorithm
                 if a.x == b.x {
-                    (a.y.min(b.y)..=a.y.max(b.y)).map(|y| Position::new(a.x, y)).for_each(|p| {
-                        self.get_pos_mut(p).map(|c| *c = *color);
-                    });
+                    (a.y.min(b.y)..=a.y.max(b.y))
+                        .map(|y| Position::new(a.x, y))
+                        .for_each(|p| {
+                            self.get_pos_mut(p).map(|c| *c = *color);
+                        });
                 } else if a.y == b.y {
-                    (a.x.min(b.x)..=a.x.max(b.x)).map(|x| Position::new(x, a.y)).for_each(|p| {
-                        self.get_pos_mut(p).map(|c| *c = *color);
-                    });
+                    (a.x.min(b.x)..=a.x.max(b.x))
+                        .map(|x| Position::new(x, a.y))
+                        .for_each(|p| {
+                            self.get_pos_mut(p).map(|c| *c = *color);
+                        });
                 } else {
                     todo!("Bresenham");
                 }
