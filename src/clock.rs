@@ -9,15 +9,60 @@ use rtt_target::rprintln;
 use crate::{
     input::InputState,
     text::{render_text, render_text_font, Font},
-    Color, Draw, Duration, Framebuffer, Position, Shape, SubState,
+    Color, Draw, Duration, Framebuffer, LcdConnection, Position, Shape, SubState,
 };
 
+pub(crate) const RAINBOW_STEPS: usize = 200;
+
+/// Switch between states with Ok (deeper) or X (go to parent).
+///
+/// MainMenu -> Time -> Settings
+///
 pub enum ClockState {
     Time {
         frame: usize,
         datetime: DateTime,
-        rainbow_steps: usize,
     },
+    Settings {
+        step: EditStep,
+        /// Datetime being edited
+        edit: DateTime,
+    },
+}
+
+#[derive(Copy, Clone)]
+pub enum EditStep {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Save,
+    Abort,
+}
+
+impl EditStep {
+    pub fn go_next(&mut self) {
+        *self = match self {
+            EditStep::Year => EditStep::Month,
+            EditStep::Month => EditStep::Day,
+            EditStep::Day => EditStep::Hour,
+            EditStep::Hour => EditStep::Minute,
+            EditStep::Minute => EditStep::Save,
+            ref x => **x,
+        };
+    }
+
+    pub fn go_prev(&mut self) {
+        *self = match self {
+            EditStep::Year => EditStep::Abort,
+            EditStep::Month => EditStep::Year,
+            EditStep::Day => EditStep::Month,
+            EditStep::Hour => EditStep::Day,
+            EditStep::Minute => EditStep::Hour,
+            ref x => **x,
+        };
+    }
 }
 
 /// Infinite! rainbow iterator with given color bands (`steps`), saturation and value in `Hsv` format
@@ -28,19 +73,119 @@ fn rainbow(steps: usize, saturation: f32, value: f32) -> impl Iterator<Item = Hs
 }
 
 impl<'d> SubState<'d> for ClockState {
-    type Data = (&'d InputState, &'d mut RealTimeClock);
+    type Data = (
+        &'d InputState,
+        &'d mut RealTimeClock,
+        &'d mut LcdConnection,
+        fn(u64),
+    );
 
     fn update(&mut self, data: Self::Data) -> Duration {
-        let (_input, rtc) = data;
+        let (input, rtc, lcd, delay_us) = data;
+
+        let mut driver = lcd.driver(delay_us);
 
         match self {
-            ClockState::Time {
-                frame,
-                datetime,
-                rainbow_steps,
-            } => {
+            ClockState::Time { frame, datetime } => {
+                let txt = {
+                    let mut s = arrayvec::ArrayString::<5>::new();
+                    write!(&mut s, "{:02}:{:02}", datetime.hour, datetime.minute).unwrap();
+
+                    s
+                };
+
+                if *frame == 0 {
+                    driver.clear().unwrap();
+                } else {
+                    driver.return_home().unwrap();
+                }
+
+                driver.write_text(&txt).unwrap();
+
                 *datetime = rtc.now().expect("get datetime");
-                *frame = (*frame + 1) % *rainbow_steps;
+                *frame = (*frame + 1) % RAINBOW_STEPS;
+
+                match input {
+                    x if x.is_just_back() => todo!("Main Menu?"),
+                    x if x.is_just_confirm() => {
+                        let new_state = ClockState::Settings {
+                            step: EditStep::Year,
+                            edit: rtc.now().unwrap(),
+                        };
+
+                        let _ = core::mem::replace(self, new_state);
+
+                        2000.millis()
+                    }
+                    _ => 2000.millis(),
+                }
+            }
+            ClockState::Settings { step, edit } => {
+                // Set and go next, go back, or change value
+                match input {
+                    x if x.is_just_back() => step.go_prev(),
+                    x if x.is_just_confirm() => step.go_next(),
+                    x if x.is_just_left() || x.is_just_right() => {
+                        let change = i32::from(x.is_just_right()) - i32::from(x.is_just_left()); // 1 or -1 (or 0, if both pressed)
+
+                        match step {
+                            EditStep::Year => edit.year = (edit.year as i32 + change) as _,
+                            EditStep::Month => {
+                                edit.month = ((edit.month as i32 + change) as u8).clamp(1, 12)
+                            }
+                            EditStep::Day => {
+                                edit.day = ((edit.day as i32 + change) as u8).clamp(1, 31)
+                            }
+                            EditStep::Hour => {
+                                edit.hour = ((edit.hour as i32 + change) as u8).clamp(0, 23)
+                            }
+                            EditStep::Minute => {
+                                edit.minute = ((edit.minute as i32 + change) as u8).clamp(0, 59)
+                            }
+                            _ => (),
+                        };
+                    }
+                    _ => (),
+                };
+
+                // Handle exit cases and render lcd value
+                driver.clear().unwrap();
+                delay_us(3000);
+
+                let mut txt = ArrayString::<16>::new();
+
+                let _ = match step {
+                    EditStep::Year => write!(&mut txt, "Year: {}", edit.year).unwrap(),
+                    EditStep::Month => write!(&mut txt, "Month: {}", edit.month).unwrap(),
+                    EditStep::Day => write!(&mut txt, "Day: {}", edit.day).unwrap(),
+                    EditStep::Hour => write!(&mut txt, "Hour: {}", edit.hour).unwrap(),
+                    EditStep::Minute => write!(&mut txt, "Minute: {}", edit.minute).unwrap(),
+                    EditStep::Abort => {
+                        let _ = core::mem::replace(
+                            self,
+                            ClockState::Time {
+                                datetime: rtc.now().unwrap(),
+                                frame: 0,
+                            },
+                        );
+                        txt.write_str("ABORT!").unwrap();
+                    } // Go back to clock without applying changes
+                    EditStep::Save => {
+                        let old = core::mem::replace(
+                            self,
+                            ClockState::Time {
+                                datetime: rtc.now().unwrap(),
+                                frame: 0,
+                            },
+                        ); // Save and go back to clock after applying changes
+                        match old {
+                            ClockState::Settings { edit, .. } => rtc.set_datetime(edit).unwrap(),
+                            _ => unreachable!("old is always Settings"),
+                        }
+                    }
+                };
+
+                driver.write_text(&txt).unwrap();
 
                 2000.millis()
             }
@@ -54,19 +199,30 @@ impl<'d> SubState<'d> for ClockState {
             .for_each(|r| r.fill(Color::new(0, 0, 0)));
 
         match self {
-            ClockState::Time {
-                frame,
-                datetime,
-                rainbow_steps,
-            } => {
+            ClockState::Time { frame, datetime } => {
                 // Iterator with 4 rainbow elements and 2 white colors at the end
-                let colors = rainbow(*rainbow_steps, 1.0, 0.5)
+                let colors = rainbow(RAINBOW_STEPS, 1.0, 0.5)
                     .skip(*frame)
                     .map(|c| Srgb::from_color(c).into_format())
                     .take(4)
                     .chain([Color::new(150, 150, 150), Color::new(150, 150, 150)]);
 
                 render_time(framebuffer, datetime, colors);
+            }
+            ClockState::Settings { step, .. } => {
+                let colors = [Color::new(0, 255, 0)].into_iter().cycle();
+
+                let txt = match step {
+                    EditStep::Year => "SETYEAR",
+                    EditStep::Month => "SETMONTH",
+                    EditStep::Day => "SETDAY",
+                    EditStep::Hour => "SETHOUR",
+                    EditStep::Minute => "SETMINUTE",
+                    EditStep::Save => "SAVE",
+                    EditStep::Abort => "ABORT",
+                };
+
+                render_text(framebuffer, txt, [0, 0].into(), colors)
             }
         }
     }

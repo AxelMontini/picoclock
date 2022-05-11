@@ -259,6 +259,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab5ef0d4909ef3724cc8cce6ccc8572c5c817592e9285f5464f8e86f8bd3726e"
 
 [[package]]
+name = "hd44780u"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "nalgebra",
+]
+
+[[package]]
 name = "heapless"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,6 +510,7 @@ dependencies = [
  "embedded-hal",
  "embedded-time",
  "fugit",
+ "hd44780u",
  "nalgebra",
  "palette",
  "panic-probe",
@@ -760,8 +769,7 @@ checksum = "61ea8d54c77f8315140a05f4c7237403bf38b72704d031543aa1d16abbf517d1"
 [[package]]
 name = "simba"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13a2609e876d4f77f6ab7ff5254fc39b4f1927ba8e6db3d18be7c32534d3725e"
+source = "git+https://github.com/AxelMontini/simba#ba1f438d122751297f9a44a087c7860e11213f3e"
 dependencies = [
  "approx",
  "num-complex 0.4.1",

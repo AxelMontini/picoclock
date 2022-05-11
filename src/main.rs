@@ -47,10 +47,25 @@ pub(crate) type Instant = <crate::MonoSystick as Monotonic>::Instant;
 pub(crate) type Duration = <crate::MonoSystick as Monotonic>::Duration;
 pub(crate) type Color = rgb::Srgb<u8>;
 
+pub(crate) type LcdConnection = hd44780u::LcdConnection<
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+    hal::gpio::DynPin,
+>;
+
 #[rtic::app(device = rp_pico::hal::pac, peripherals = true, dispatchers = [TIMER_IRQ_0, TIMER_IRQ_1])]
 mod app {
     use super::*;
+    use embedded_hal::digital::v2::{InputPin, OutputPin};
     use embedded_time::fixed_point::FixedPoint;
+    use hal::gpio::DynPin;
 
     #[monotonic(binds = SysTick, default = true)]
     type Mono = MonoSystick;
@@ -72,6 +87,7 @@ mod app {
         rtc: RealTimeClock,
         state: State,
         framebuffer: Framebuffer,
+        lcd: crate::LcdConnection,
     }
 
     #[idle]
@@ -88,7 +104,7 @@ mod app {
         // Print to pico probe
         rtt_init_print!();
 
-        // // Grab our singleton objects // in ctx
+        // // Grab our singleton objects                        // Now in ctx
         // let mut pac = pac::Peripherals::take().unwrap();
         // let core = pac::CorePeripherals::take().unwrap();
 
@@ -112,14 +128,9 @@ mod app {
         .ok()
         .unwrap();
 
-        // // The delay object lets us wait for specified amounts of time (in
-        // // milliseconds) //Not used
-        // let mut delay =
-        //     cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
-
         // timer for periodic tasks, interrupts, ...
         let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
-        let alarm0 = timer.alarm_0().unwrap();
+        let alarm3 = timer.alarm_3().unwrap();
 
         // Real time clock should be initialized with default values,
         // we can then tune it through the Clock app
@@ -192,7 +203,6 @@ mod app {
         let state = State::Clock(ClockState::Time {
             frame: 0,
             datetime: INITIAL_DATE,
-            rainbow_steps: 100,
         });
 
         // Control buttons (for interface).
@@ -205,12 +215,28 @@ mod app {
 
         let framebuffer = Framebuffer::default();
 
+        let lcd = {
+            let db7 = pins.gpio2.into_push_pull_output().into();
+            let db6 = pins.gpio3.into_push_pull_output().into();
+            let db5 = pins.gpio4.into_push_pull_output().into();
+            let db4 = pins.gpio5.into_push_pull_output().into();
+            let db3 = pins.gpio6.into_push_pull_output().into();
+            let db2 = pins.gpio7.into_push_pull_output().into();
+            let db1 = pins.gpio8.into_push_pull_output().into();
+            let db0 = pins.gpio9.into_push_pull_output().into();
+            let e = pins.gpio10.into_push_pull_output().into();
+            let rs = pins.gpio11.into_push_pull_output().into();
+
+            hd44780u::LcdConnection::new(rs, e, db0, db1, db2, db3, db4, db5, db6, db7)
+        };
+
         let shared = Shared {
             timer,
             input_state,
             state,
             framebuffer,
             rtc,
+            lcd,
         };
 
         let local = Local {
@@ -221,11 +247,42 @@ mod app {
             back_button,
         };
 
+        lcd_init::spawn_after(100.millis()).expect("Ho test exp");
         // start update once
-        update::spawn(false).expect("update for the first time");
+        update::spawn_after(2000.millis(), false).expect("update for the first time");
         debounce_input::spawn().expect("debouncing first time");
 
         (shared, local, init::Monotonics(mono))
+    }
+
+    #[task(priority = 1, shared = [lcd])]
+    fn lcd_init(mut ctx: lcd_init::Context) {
+        ctx.shared.lcd.lock(|lcd| {
+            let delay_us = |us: u64| {
+                let end = monotonics::now() + us.micros();
+                while end > monotonics::now() {
+                    cortex_m::asm::nop(); // busy wait
+                }
+            };
+
+            let mut driver = lcd.driver(delay_us);
+
+            driver.set_function().expect("lcd function");
+            delay_us(20000);
+            driver.set_function().expect("lcd function");
+            delay_us(20000);
+            driver.set_function().expect("lcd function");
+            delay_us(20000);
+            driver
+                .set_display_control(true, true, true)
+                .expect("lcd display control");
+            delay_us(20000);
+            driver.clear().expect("Clear display");
+            delay_us(20000);
+            driver.write_text("Booted!").expect("Write text");
+            driver.set_line1().expect("Set line");
+            driver.write_text("Clock is starting").expect("Write text");
+        });
     }
 
     #[task(priority = 2, shared = [framebuffer], local = [tx])]
@@ -284,13 +341,25 @@ mod app {
 
     /// Capacity must be 2, since this task spawns itself after some time
     /// `debounce = true` indicates that this update was spawned by debounce and thus no scheduling should be performed
-    #[task(priority = 2, capacity = 2, shared = [state, input_state, rtc])]
+    #[task(priority = 2, capacity = 2, shared = [state, input_state, rtc, lcd])]
     fn update(ctx: update::Context, debounce: bool) {
+        let delay_us = |us: u64| {
+            let end = monotonics::now() + us.micros();
+            while end > monotonics::now() {
+                cortex_m::asm::nop(); // busy wait
+            }
+        };
+
         rprintln!("Update");
-        let next_update =
-            (ctx.shared.input_state, ctx.shared.state, ctx.shared.rtc).lock(|input, state, rtc| {
+        let next_update = (
+            ctx.shared.input_state,
+            ctx.shared.state,
+            ctx.shared.rtc,
+            ctx.shared.lcd,
+        )
+            .lock(|input, state, rtc, lcd| {
                 let nu = match state {
-                    State::Clock(clock) => clock.update((input, rtc)),
+                    State::Clock(clock) => clock.update((input, rtc, lcd, delay_us)),
                     State::Snake(snake) => snake.update(input),
                     State::Settings => todo!("Implement settings update"),
                 };

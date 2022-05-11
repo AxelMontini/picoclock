@@ -2,45 +2,26 @@
 
 use embedded_hal::digital::v2::{InputPin, OutputPin, PinState};
 
-pub type Result<T> = core::result::Result<T, ()>; //TODO: Actual error handling
-
 /// LCD Struct. Provides methods to control the display.
-pub struct Lcd<RW, RS, BF, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7> {
-    rs: RS,
-    bf: BF,
-    rw: RW,
-    e: E,
-    db0: DB0,
-    db1: DB1,
-    db2: DB2,
-    db3: DB3,
-    db4: DB4,
-    db5: DB5,
-    db6: DB6,
-    db7: DB7,
+pub struct LcdConnection<RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7> {
+    pub(crate) rs: RS,
+    pub(crate) e: E,
+    pub(crate) db0: DB0,
+    pub(crate) db1: DB1,
+    pub(crate) db2: DB2,
+    pub(crate) db3: DB3,
+    pub(crate) db4: DB4,
+    pub(crate) db5: DB5,
+    pub(crate) db6: DB6,
+    pub(crate) db7: DB7,
 }
 
-impl<RW, RS, BF, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7>
-    Lcd<RW, RS, BF, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7>
-where
-    RW: OutputPin,
-    RS: OutputPin,
-    E: OutputPin,
-    DB0: OutputPin + InputPin,
-    DB1: OutputPin + InputPin,
-    DB2: OutputPin + InputPin,
-    DB3: OutputPin + InputPin,
-    DB4: OutputPin + InputPin,
-    DB5: OutputPin + InputPin,
-    DB6: OutputPin + InputPin,
-    DB7: OutputPin + InputPin,
-    BF: InputPin,
+impl<RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7>
+    LcdConnection<RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7>
 {
     pub fn new(
         rs: RS,
-        rw: RW,
         e: E,
-        bf: BF,
         db0: DB0,
         db1: DB1,
         db2: DB2,
@@ -52,8 +33,6 @@ where
     ) -> Self {
         Self {
             rs,
-            bf,
-            rw,
             e,
             db0,
             db1,
@@ -66,10 +45,67 @@ where
         }
     }
 
-    pub fn clear(&mut self) -> Result<()> {
-        self.write_rsrw(false, false);
-        self.write_data(1);
-        self.signal();
+    pub fn driver<D: Fn(u64) -> ()>(
+        &mut self,
+        delay_us: D,
+    ) -> LcdDriver<RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7, D> {
+        LcdDriver {
+            conn: self,
+            delay_us,
+        }
+    }
+}
+
+/// Struct potentially referencing an `Lcd` instance.
+///
+/// Designed so that it can be created on the fly, where access
+/// to a timer is temporary (e.g. behind a lock).
+pub struct LcdDriver<'c, RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7, DELAY> {
+    conn: &'c mut LcdConnection<RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7>,
+    delay_us: DELAY,
+}
+
+impl<'c, RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7, ERR, DELAY>
+    LcdDriver<'c, RS, E, DB0, DB1, DB2, DB3, DB4, DB5, DB6, DB7, DELAY>
+where
+    RS: OutputPin<Error = ERR>,
+    E: OutputPin<Error = ERR>,
+    DB0: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB1: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB2: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB3: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB4: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB5: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB6: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DB7: OutputPin<Error = ERR> + InputPin<Error = ERR>,
+    DELAY: Fn(u64) -> (),
+{
+
+    pub fn return_home(&mut self) -> Result<(), ERR> {
+        self.write_rs(false)?;
+        self.write_data(0b10)?;
+        self.signal()?;
+        (self.delay_us)(1520);
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> Result<(), ERR> {
+        self.write_rs(false)?;
+        self.write_data(1)?;
+        self.signal()?;
+
+        (self.delay_us)(5_000); // 1.52ms reset time
+
+        Ok(())
+    }
+
+    /// Fixed to 8 bit, 2 lines, 5x10 font
+    pub fn set_function(&mut self) -> Result<(), ERR> {
+        self.write_rs(false)?;
+        let data = 0b111011;
+        self.write_data(data)?;
+        self.signal()?;
+        (self.delay_us)(37);
 
         Ok(())
     }
@@ -79,57 +115,57 @@ where
         display_on: bool,
         cursor_on: bool,
         blink: bool,
-    ) -> Result<()> {
-        self.write_rsrw(false, false);
+    ) -> Result<(), ERR> {
+        self.write_rs(false)?;
         let data = 0b_1000 | u8::from(display_on) << 2 | u8::from(cursor_on) << 1 | u8::from(blink);
-        self.write_data(data);
-        self.signal();
+        self.write_data(data)?;
+        self.signal()?;
+
+        (self.delay_us)(37);
 
         Ok(())
-    }
-
-    /// Returns the Busy Flag and the address counter
-    fn read_bf(&mut self) -> Result<(bool, u8)> {
-        self.write_rsrw(false, true);
-        self.write_data(0);
-        self.signal();
-
-        let bf = self.db7.is_high()?;
-        let address = u8::from(self.db0.is_high()?)
-            | u8::from(self.db1.is_high()?) << 1
-            | u8::from(self.db2.is_high()?) << 2
-            | u8::from(self.db3.is_high()?) << 3
-            | u8::from(self.db4.is_high()?) << 4
-            | u8::from(self.db5.is_high()?) << 5
-            | u8::from(self.db6.is_high()?) << 6
-            | u8::from(self.db7.is_high()?) << 7;
-
-        Ok((bf, address));
     }
 
     /// Only 8-bit characters are supported since this is an LCD.
     /// Returns an error either if the character is not valid ASCII or if there was an IO error.
-    pub fn write_char(&mut self, c: char) -> Result<()> {
+    pub fn write_char(&mut self, c: char) -> Result<(), ERR> {
         if !c.is_ascii() {
-            return Err(());
+            panic!("TODO: GOOD ERROR HANDLING");
         }
 
-        self.write_rsrw(true, false);
-        self.write_data(c as u8);
-        self.signal();
+        self.write_rs(true)?;
+        self.write_data(c as u8)?;
+        self.signal()?;
+
+        (self.delay_us)(37);
 
         Ok(())
     }
 
-    pub fn write_text(&mut self, text: &str) -> Result<()> {
-        text.chars().try_for_each(|c| self.write_char(c));
-
+    /// Set ddram address. Address should be 7 bits and it is clamped to fit.
+    pub fn set_ddram_address(&mut self, addr: u8) -> Result<(), ERR> {
+        let data = addr | 1 << 7; // Format 1 A A A A A A A
+        self.write_rs(false)?;
+        self.write_data(data)?;
+        self.signal()?;
+        (self.delay_us)(37);
         Ok(())
+    }
+
+    pub fn set_line0(&mut self) -> Result<(), ERR> {
+        self.set_ddram_address(0)
+    }
+    pub fn set_line1(&mut self) -> Result<(), ERR> {
+        self.set_ddram_address(0x40)
+    }
+
+    pub fn write_text(&mut self, text: &str) -> Result<(), ERR> {
+        text.chars().try_for_each(|c| self.write_char(c))
     }
 
     /// Writes data to the `data` pins. MSB is DB7, LSB is DB0.
     /// This does not change state of any other pins! (even `e`).
-    fn write_data(&mut self, data: u8) -> Result<()> {
+    fn write_data(&mut self, data: u8) -> Result<(), ERR> {
         let state = |data: u8, pin_num: u8| {
             if (data >> pin_num) & 1 == 1 {
                 PinState::High
@@ -137,30 +173,30 @@ where
                 PinState::Low
             }
         };
-        self.db0.set_state(state(data, 0));
-        self.db1.set_state(state(data, 1));
-        self.db2.set_state(state(data, 2));
-        self.db3.set_state(state(data, 3));
-        self.db4.set_state(state(data, 4));
-        self.db5.set_state(state(data, 5));
-        self.db6.set_state(state(data, 6));
-        self.db7.set_state(state(data, 7));
+
+        self.conn.db0.set_state(state(data, 0))?;
+        self.conn.db1.set_state(state(data, 1))?;
+        self.conn.db2.set_state(state(data, 2))?;
+        self.conn.db3.set_state(state(data, 3))?;
+        self.conn.db4.set_state(state(data, 4))?;
+        self.conn.db5.set_state(state(data, 5))?;
+        self.conn.db6.set_state(state(data, 6))?;
+        self.conn.db7.set_state(state(data, 7))?;
 
         Ok(())
     }
 
-    fn write_rsrw(&mut self, rs: bool, rw: bool) -> Result<()> {
-        self.rs.set_state(PinState::from(rs));
-        self.rw.set_state(PinState::from(rw));
+    fn write_rs(&mut self, rs: bool) -> Result<(), ERR> {
+        self.conn.rs.set_state(PinState::from(rs))?;
 
         Ok(())
     }
 
     /// Signal a write by toggling `e`
-    fn signal(&mut self) -> Result<()> {
-        self.e.set_high();
-        //TODO: Sleep?
-        self.e.set_low();
+    fn signal(&mut self) -> Result<(), ERR> {
+        self.conn.e.set_high()?;
+        (self.delay_us)(45);
+        self.conn.e.set_low()?;
 
         Ok(())
     }
