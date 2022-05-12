@@ -1,15 +1,10 @@
-# Spi issues
+[![Rp Pico build thumbv6m](https://github.com/AxelMontini/picoclock/actions/workflows/rust.yml/badge.svg)](https://github.com/AxelMontini/picoclock/actions/workflows/rust.yml)
 
-Issues in rp-hal's SPI implementation:
+# Picoclock
 
-## Blocks
+A scuffed wall clock displaying stuff on a 32x16 led matrix (ws2812b). Also has an LCD display to display things like settings.
 
-`spi.write()` blocks after a word: [code](https://docs.rs/embedded-hal/0.2.6/src/embedded_hal/blocking/spi.rs.html#71).
-This inserts a pause in the output, making the last written bit persist longer.
+## Implementation
 
-## Motorola format
-
-Motorola SPI format inserts a bit after a word or something.
-Setting FRF register to `0b01` sets the format to TI, in which all bits are
-contiguous. 
-
+- Uses a PIO to control the LEDs (input queue receives 24bit colors and sends them to the LEDS with the appropriate protocol).
+- Uses RTIC for concurrency (recurrent update/render cycle, input debouncing, ...); Has drawbacks.
