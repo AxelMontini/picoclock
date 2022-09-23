@@ -23,6 +23,7 @@ rtt-target = { version = "0.3.1", features = ["cortex-m"] }
 palette = { version = "0.6", default-features = false, features = ["libm"] }
 nalgebra = { version = "0.31", default-features = false, features = ["libm"] }
 hd44780u = { path = "./hd44780u" }
+libm = "0.2"
 
 [patch.crates-io]
 simba = { git = "https://github.com/AxelMontini/simba" }

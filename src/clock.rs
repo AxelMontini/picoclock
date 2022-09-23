@@ -200,12 +200,18 @@ impl<'d> SubState<'d> for ClockState {
 
         match self {
             ClockState::Time { frame, datetime } => {
+                // value based on time of the day
+                let ang = datetime.hour as f32 * core::f32::consts::PI / 12.0;
+                let value = 0.2 + (1.0 - libm::cosf(ang)) * 0.2;
+
+                let color_colon = Hsv::new(0.0, 0.0, value);
+
                 // Iterator with 4 rainbow elements and 2 white colors at the end
-                let colors = rainbow(RAINBOW_STEPS, 1.0, 0.5)
+                let colors = rainbow(RAINBOW_STEPS, 1.0, value)
                     .skip(*frame)
-                    .map(|c| Srgb::from_color(c).into_format())
                     .take(4)
-                    .chain([Color::new(150, 150, 150), Color::new(150, 150, 150)]);
+                    .chain([color_colon; 2])
+                    .map(|c| Srgb::from_color(c).into_format());
 
                 render_time(framebuffer, datetime, colors);
             }

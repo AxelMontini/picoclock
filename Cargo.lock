@@ -511,6 +511,7 @@ dependencies = [
  "embedded-time",
  "fugit",
  "hd44780u",
+ "libm",
  "nalgebra",
  "palette",
  "panic-probe",
