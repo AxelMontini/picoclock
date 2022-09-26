@@ -42,8 +42,8 @@ impl ButtonState {
 
     pub fn set_new(&mut self, new: bool) {
         let v = match self {
-            ButtonState::Pressed(v, i) => v,
-            ButtonState::Released(v, i) => v,
+            ButtonState::Pressed(v, _i) => v,
+            ButtonState::Released(v, _i) => v,
         };
 
         *v = new;

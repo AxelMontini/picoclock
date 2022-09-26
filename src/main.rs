@@ -1,18 +1,14 @@
 #![no_std]
 #![no_main]
 
-use core::borrow::BorrowMut;
-use core::fmt::{self, Debug};
-use core::ops::{Deref, Sub};
-use core::sync::atomic::Ordering;
-use core::{cell::RefCell, ops::Add};
+use core::fmt::{self};
+
 use fugit::ExtU64;
 
 use clock::ClockState;
-use cortex_m::interrupt::{CriticalSection, Mutex};
+
 // The macro for our start-up function
-use cortex_m_rt::entry;
-use embedded_hal::digital::v2::InputPin;
+
 use input::InputState;
 use nalgebra::Vector2;
 use palette::rgb;
@@ -21,15 +17,15 @@ use panic_probe as _; // needed for panic probe stuff
 use rp_pico::hal::rtc::DateTime;
 use rp_pico::hal::{
     self,
-    gpio::{Interrupt, Pin},
-    pac::{self, interrupt},
+    gpio::Pin,
+    pac::{self},
     prelude::*,
 };
 
 use hal::rtc::RealTimeClock;
 use rtic::Monotonic;
 use rtt_target::{rprint, rprintln, rtt_init_print};
-use snake::{Direction, SnakeState};
+use snake::SnakeState;
 use systick_monotonic::Systick;
 
 mod clock;
@@ -65,7 +61,6 @@ mod app {
     use super::*;
     use embedded_hal::digital::v2::{InputPin, OutputPin};
     use embedded_time::fixed_point::FixedPoint;
-    use hal::gpio::DynPin;
 
     #[monotonic(binds = SysTick, default = true)]
     type Mono = MonoSystick;
@@ -130,7 +125,7 @@ mod app {
 
         // timer for periodic tasks, interrupts, ...
         let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
-        let alarm3 = timer.alarm_3().unwrap();
+        let _alarm3 = timer.alarm_3().unwrap();
 
         // Real time clock should be initialized with default values,
         // we can then tune it through the Clock app
@@ -287,7 +282,7 @@ mod app {
 
     #[task(priority = 2, shared = [framebuffer], local = [tx])]
     fn draw(mut ctx: draw::Context) {
-        cortex_m::interrupt::free(|cs| {
+        cortex_m::interrupt::free(|_cs| {
             // An interrupt should never stop this, since delays in the signal could be interpreted as "stop" by the leds.
             let tx = ctx.local.tx;
             ctx.shared.framebuffer.lock(|framebuffer| {
@@ -472,7 +467,7 @@ trait Draw {
     /// Draw a given shape on this thing, with given color
     fn draw(&mut self, shape: &Shape, color: &Color) {
         match shape {
-            Shape::Circle(c, r) => {
+            Shape::Circle(_c, _r) => {
                 todo!("implement")
             }
             Shape::Line(a, b) => {

@@ -1,9 +1,10 @@
-use embedded_time::duration::Extensions;
 use fugit::ExtU64;
 use nalgebra::Vector2;
 use pio::ArrayVec;
 
-use crate::{text::render_text, Color, Framebuffer, InputState, Position, SubState, Duration, bounded};
+use crate::{
+    bounded, text::render_text, Color, Duration, Framebuffer, InputState, Position, SubState,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Direction {
@@ -52,7 +53,7 @@ impl<'d> SubState<'d> for SnakeState {
 
     fn update(&mut self, input: Self::Data) -> Duration {
         match self {
-            SnakeState::Menu { selected, frame } => {
+            SnakeState::Menu { selected: _, frame } => {
                 *frame = (*frame + 1) % 16;
 
                 match input {
@@ -63,7 +64,7 @@ impl<'d> SubState<'d> for SnakeState {
             SnakeState::Play {
                 direction,
                 snake,
-                apple,
+                apple: _,
             } => {
                 match input {
                     x if x.is_back() => todo!("How 2 go back?"),
@@ -117,7 +118,7 @@ impl<'d> SubState<'d> for SnakeState {
             SnakeState::Play {
                 snake,
                 apple,
-                direction,
+                direction: _,
             } => {
                 *framebuffer = Framebuffer::default();
 

@@ -27,7 +27,10 @@ impl<const W: usize, const H: usize> ColorRender for Letter<W, H> {
                     .enumerate()
                     .filter(|(_c, &draw)| draw)
                     .for_each(|(col_idx, _draw)| {
-                        framebuffer.get_mut(origin_y + row_idx).and_then(|r| r.get_mut(origin_x + col_idx)).map(|c| *c = color);
+                        framebuffer
+                            .get_mut(origin_y + row_idx)
+                            .and_then(|r| r.get_mut(origin_x + col_idx))
+                            .map(|c| *c = color);
                     })
             });
     }

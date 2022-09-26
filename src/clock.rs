@@ -1,15 +1,13 @@
 use core::fmt::Write;
 
-use arrayvec::{ArrayString, ArrayVec};
+use arrayvec::ArrayString;
 use fugit::ExtU64;
-use palette::{FromColor, Hsv, IntoColor, Srgb};
+use palette::{FromColor, Hsv, Srgb};
 use rp_pico::hal::rtc::{DateTime, RealTimeClock};
-use rtt_target::rprintln;
 
 use crate::{
-    input::InputState,
-    text::{render_text, render_text_font, Font},
-    Color, Draw, Duration, Framebuffer, LcdConnection, Position, Shape, SubState,
+    input::InputState, text::render_text, Color, Draw, Duration, Framebuffer, LcdConnection,
+    Position, Shape, SubState,
 };
 
 pub(crate) const RAINBOW_STEPS: usize = 200;
