@@ -2,7 +2,6 @@
 #![no_main]
 
 use core::fmt::{self};
-
 use fugit::ExtU64;
 
 use clock::ClockState;
@@ -32,6 +31,10 @@ mod clock;
 mod input;
 mod snake;
 mod text;
+
+#[link_section = ".boot_loader"]
+#[used]
+pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 type RightButtonPin = Pin<hal::gpio::bank0::Gpio18, hal::gpio::Input<hal::gpio::PullDown>>;
 type LeftButtonPin = Pin<hal::gpio::bank0::Gpio17, hal::gpio::Input<hal::gpio::PullDown>>;
@@ -159,7 +162,7 @@ mod app {
 
         // Configure the PIO state machine.
         let div =
-            clocks.system_clock.freq().integer() as f32 / (FREQ as f32 * CYCLES_PER_BIT as f32);
+            clocks.system_clock.freq().to_Hz() as f32 / (FREQ as f32 * CYCLES_PER_BIT as f32);
 
         // PIO Program for the leds
         let mut wrap_target = a.label();
@@ -442,14 +445,10 @@ pub(crate) const INITIAL_DATE: DateTime = DateTime {
     month: 5,
     day: 5,
     day_of_week: hal::rtc::DayOfWeek::Thursday,
-    hour: 20,
+    hour: 22,
     minute: 55,
     second: 0,
 };
-
-#[link_section = ".boot2"]
-#[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 /// framebuffer type. The bottom left corner is at position `(0,0)`
 type Framebuffer = [[Color; 32]; 16];

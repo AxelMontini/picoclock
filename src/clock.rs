@@ -4,6 +4,7 @@ use arrayvec::ArrayString;
 use fugit::ExtU64;
 use palette::{FromColor, Hsv, Srgb};
 use rp_pico::hal::rtc::{DateTime, RealTimeClock};
+use rtt_target::rprintln;
 
 use crate::{
     input::InputState, text::render_text, Color, Draw, Duration, Framebuffer, LcdConnection,
@@ -200,7 +201,9 @@ impl<'d> SubState<'d> for ClockState {
             ClockState::Time { frame, datetime } => {
                 // value based on time of the day
                 let ang = datetime.hour as f32 * core::f32::consts::PI / 12.0;
-                let value = 0.2 + (1.0 - libm::cosf(ang)) * 0.2;
+                let value = 0.05 + (1.0 - libm::cosf(ang)) * 0.2;
+
+                rprintln!("Brightness: {}", value);
 
                 let color_colon = Hsv::new(0.0, 0.0, value);
 
